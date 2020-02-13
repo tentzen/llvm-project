@@ -746,7 +746,10 @@ void WinException::emitCXXFrameHandler3Table(const MachineFunction *MF) {
   OS.EmitIntValue(0, 4);
 
   AddComment("EHFlags");
-  OS.EmitIntValue(1, 4);
+  if (MMI->getModule()->getModuleFlag("eh-asynch"))
+    OS.EmitIntValue(0, 4); // -EHa
+  else
+    OS.EmitIntValue(1, 4);
 
   // UnwindMapEntry {
   //   int32_t ToState;

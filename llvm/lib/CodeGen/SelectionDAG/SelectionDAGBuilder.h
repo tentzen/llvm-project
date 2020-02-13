@@ -574,6 +574,8 @@ public:
   lowerInvokable(TargetLowering::CallLoweringInfo &CLI,
                  const BasicBlock *EHPadBB = nullptr);
 
+  void lowerInvokeSEHIntrinsics(/* InvokeInst &I */);
+
   /// When an MBB was split during scheduling, update the
   /// references that need to refer to the last resulting block.
   void UpdateSplitBlock(MachineBasicBlock *First, MachineBasicBlock *Last);

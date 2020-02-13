@@ -1333,6 +1333,10 @@ Generate coverage mapping to enable code coverage analysis
 
 Enable C++ exceptions
 
+.. option:: -feh-asynch, -fno-feh-asynch
+
+Enable EH Asynchronous exceptions
+
 .. option:: -fcxx-modules, -fno-cxx-modules
 
 .. option:: -fdata-sections, -fno-data-sections

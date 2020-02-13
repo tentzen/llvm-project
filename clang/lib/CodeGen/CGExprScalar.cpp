@@ -262,6 +262,12 @@ public:
                       const BinOpInfo &Info);
 
   Value *EmitLoadOfLValue(LValue LV, SourceLocation Loc) {
+    // emit an invoke to _seh_test_pointer() runtime
+    // if (getLangOpts().EHAsynch && isSEHTryScope()) { // see EmitCall() in CGCAll.cpp
+    //  Builder.CreateCall(
+    //      CGF.CGM.getIntrinsic(llvm::Intrinsic::seh_test_pointer,
+    //      CGF.CGM.VoidTy), LV.getPointer());
+    // }
     return CGF.EmitLoadOfLValue(LV, Loc).getScalarVal();
   }
 

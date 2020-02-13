@@ -1275,3 +1275,101 @@ void CodeGenFunction::EmitCXXTemporary(const CXXTemporary *Temporary,
   pushDestroy(NormalAndEHCleanup, Ptr, TempType, destroyCXXObject,
               /*useEHCleanup*/ true);
 }
+
+static llvm::FunctionCallee getEhaScopeBeginFn(CodeGenModule & CGM) {
+    llvm::FunctionType * FTy =
+    llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
+    return CGM.CreateRuntimeFunction(FTy, "llvm.eha.scope.begin");
+}
+
+static llvm::FunctionCallee getEhaScopeEndFn(CodeGenModule & CGM) {
+    llvm::FunctionType * FTy =
+    llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
+    return CGM.CreateRuntimeFunction(FTy, "llvm.eha.scope.end");
+}
+
+bool CodeGenFunction::EmitSehBranch(llvm::BasicBlock * ContBB) {
+  bool IsEHa = getLangOpts().EHAsynch;
+  const EHPersonality & Personality = EHPersonality::get(*this);
+  if (!IsEHa || !Personality.isMSVCXXPersonality())
+    return false;
+  llvm::BasicBlock * InvokeDest = getInvokeDest();
+  llvm::BasicBlock * BB = Builder.GetInsertBlock();
+  if (BB && InvokeDest) {
+    // if BB includes any "faulty instruction"
+    //   insert an Invoke before the Branch/Switch, or
+    //   append an invoke at the end if not terminated
+    llvm::Instruction * FI = BB->getFirstFaultyInst();
+    llvm::Instruction * TI = BB->getTerminator();
+    if (FI && (!TI || (isa<llvm::BranchInst>(TI) || isa<llvm::SwitchInst>(TI)))) {
+      // create a new block with label and TI
+      if (TI) {
+        // move TI from BB block to ContBB
+        TI->removeFromParent();
+        TI->insertAfter(ContBB->getFirstNonPHI());
+      }
+      // append Invike llvm.eha.scope.end at the end of BB
+      llvm::FunctionCallee SehCppScope = getEhaScopeEndFn(CGM);
+      Builder.CreateInvoke(SehCppScope, ContBB, InvokeDest);
+
+      // Split BB: move [FI..Invoke] instrs to BB2
+      llvm::BasicBlock * BB2 = BB->splitBasicBlock(FI->getIterator());
+      // Replace end branch with Invike llvm.eha.scope.begin in BB
+      llvm::Instruction * TI2 = BB->getTerminator();
+      TI2->eraseFromParent();
+      llvm::FunctionCallee SehCppScope2 = getEhaScopeBeginFn(CGM);
+      Builder.SetInsertPoint(BB);
+      Builder.CreateInvoke(SehCppScope2, BB2, InvokeDest);
+      return true; 
+    }
+  }  // end of if (IsEHa..)
+  return false;
+}
+
+// if it's a CPP under -EHa, and EHStack is not empty
+void CodeGenFunction::EmitSehCppInvoke() {
+  bool IsEHa = getLangOpts().EHAsynch;
+  const EHPersonality & Personality = EHPersonality::get(*this);
+  if (!IsEHa || !Personality.isMSVCXXPersonality())
+     return;
+  llvm::BasicBlock * InvokeDest = getInvokeDest();
+  llvm::BasicBlock * BB = Builder.GetInsertBlock();
+  if (BB && InvokeDest) {
+    // if BB includes any "faulty instruction"
+    //   insert an Invoke before the Branch/Switch, or
+    //   append an invoke at the end if not terminated
+    // int IncludeFaultyInstr = !BB->empty(); // ToDo
+    llvm::Instruction * FI = BB->getFirstFaultyInst();
+    llvm::Instruction * TI = BB->getTerminator();
+    if (FI && (!TI || (isa<llvm::BranchInst>(TI) || isa<llvm::SwitchInst>(TI)))) {
+      // create a new block with label and TI
+      llvm::BasicBlock * ContBB = createBasicBlock("invoke.cont2");
+      if (TI) {
+        // move TI from BB block to ContBB
+        TI->removeFromParent();
+        TI->insertAfter(ContBB->getFirstNonPHI());
+        
+      }
+
+      // append Invike llvm.eha.scope.end at the end of BB
+      llvm::FunctionCallee SehCppScope = getEhaScopeEndFn(CGM);
+      Builder.CreateInvoke(SehCppScope, ContBB, InvokeDest);
+      
+      // Place ContBB after BB
+      CurFn->getBasicBlockList().insertAfter(BB->getIterator(), ContBB);
+
+      // Split BB: move [FI..Invoke] instrs to BB2
+      llvm::BasicBlock * BB2 = BB->splitBasicBlock(FI->getIterator());
+
+      // Replace end branch with Invike llvm.eha.scope.begin in BB
+      llvm::Instruction * TI2 = BB->getTerminator();
+      TI2->eraseFromParent();
+      llvm::FunctionCallee SehCppScope2 = getEhaScopeBeginFn(CGM);
+      Builder.SetInsertPoint(BB);
+      Builder.CreateInvoke(SehCppScope2, BB2, InvokeDest);
+      // continue on ContBB block
+      Builder.SetInsertPoint(ContBB);
+    }
+    // else do nothing
+  }
+}

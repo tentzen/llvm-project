@@ -331,6 +331,11 @@ void FunctionLoweringInfo::set(const Function &fn, MachineFunction &mf,
     }
     EHInfo.EHPadUnwindMap = std::move(NewMap);
   }
+  // if (isAsynchronousEHPersonality(Personality)) {
+  if (Personality == EHPersonality::MSVC_Win64SEH) {
+    // remove pointer checking instructions for SEH  -EHa
+    // removeSEHTestPointerInstructions(&fn);
+  }
 }
 
 /// clear - Clear out all the function-specific state. This returns this

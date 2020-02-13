@@ -38,6 +38,18 @@ static llvm::FunctionCallee getFreeExceptionFn(CodeGenModule &CGM) {
   return CGM.CreateRuntimeFunction(FTy, "__cxa_free_exception");
 }
 
+static llvm::FunctionCallee getSehTryBeginFn(CodeGenModule & CGM) {
+    llvm::FunctionType * FTy =
+    llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
+    return CGM.CreateRuntimeFunction(FTy, "llvm.seh.try.begin");
+}
+
+static llvm::FunctionCallee getSehTryEndFn(CodeGenModule & CGM) {
+    llvm::FunctionType * FTy =
+    llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
+    return CGM.CreateRuntimeFunction(FTy, "llvm.seh.try.end");
+}
+
 static llvm::FunctionCallee getUnexpectedFn(CodeGenModule &CGM) {
   // void __cxa_call_unexpected(void *thrown_exception);
 
@@ -1600,7 +1612,22 @@ void CodeGenFunction::EmitSEHTryStmt(const SEHTryStmt &S) {
     JumpDest TryExit = getJumpDestInCurrentScope("__try.__leave");
 
     SEHTryEpilogueStack.push_back(&TryExit);
+
+    // emit an invoke to _seh_try_begin() runtime for -EHa
+    bool IsEHa = getLangOpts().EHAsynch;
+    if (IsEHa) {
+      llvm::FunctionCallee SehTryBegin = getSehTryBeginFn(CGM);
+      EmitRuntimeCallOrInvoke(SehTryBegin);
+    }
+
     EmitStmt(S.getTryBlock());
+
+    // emit an invoke to _seh_try_end() runtime
+    if (IsEHa) {
+      llvm::FunctionCallee SehTryEnd = getSehTryEndFn(CGM);
+      EmitRuntimeCallOrInvoke(SehTryEnd);
+    }
+
     SEHTryEpilogueStack.pop_back();
 
     if (!TryExit.getBlock()->use_empty())

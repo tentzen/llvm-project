@@ -450,6 +450,17 @@ def int_eh_recoverfp : Intrinsic<[llvm_ptr_ty],
                                  [llvm_ptr_ty, llvm_ptr_ty],
                                  [IntrNoMem]>;
 
+// To mark the beginning/end of a try-scope for Windows SEH -EHa
+//  calls/invokes to these intrinsics are placed to model control flows
+//    caused by HW exceptions under option -EHa.
+//  calls/invokes to these intrinsics will be discarded during a codegen pass
+//   after EH tables are generated
+def int_seh_try_begin : Intrinsic<[], [], [IntrReadMem, IntrWriteMem, IntrWillReturn]>;
+def int_seh_try_end : Intrinsic<[], [], [IntrReadMem, IntrWriteMem, IntrWillReturn]>;
+def int_seh_test_pointer : Intrinsic<[], [llvm_ptr_ty], [IntrReadMem, IntrWriteMem, IntrWillReturn]>;
+def int_eha_scope_begin : Intrinsic<[], [], [IntrNoMem]>;
+def int_eha_scope_end : Intrinsic<[], [], [IntrNoMem]>;
+
 // Note: we treat stacksave/stackrestore as writemem because we don't otherwise
 // model their dependencies on allocas.
 def int_stacksave     : Intrinsic<[llvm_ptr_ty]>,

@@ -470,6 +470,12 @@ void CodeGenFunction::SimplifyForwardingBlocks(llvm::BasicBlock *BB) {
   BB->eraseFromParent();
 }
 
+static llvm::FunctionCallee getSehCppScopeFn(CodeGenModule & CGM) {
+  llvm::FunctionType * FTy =
+    llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
+  return CGM.CreateRuntimeFunction(FTy, "llvm.seh.cpp.scope");
+}
+
 void CodeGenFunction::EmitBlock(llvm::BasicBlock *BB, bool IsFinished) {
   llvm::BasicBlock *CurBB = Builder.GetInsertBlock();
 
@@ -500,8 +506,10 @@ void CodeGenFunction::EmitBranch(llvm::BasicBlock *Target) {
     // If there is no insert point or the previous block is already
     // terminated, don't touch it.
   } else {
-    // Otherwise, create a fall-through branch.
-    Builder.CreateBr(Target);
+    if (!EmitSehBranch(Target)) {
+      // Otherwise, create a fall-through branch.
+      Builder.CreateBr(Target);
+    }
   }
 
   Builder.ClearInsertionPoint();
