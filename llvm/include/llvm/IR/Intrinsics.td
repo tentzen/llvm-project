@@ -457,7 +457,6 @@ def int_eh_recoverfp : Intrinsic<[llvm_ptr_ty],
 //   after EH tables are generated
 def int_seh_try_begin : Intrinsic<[], [], [IntrReadMem, IntrWriteMem, IntrWillReturn]>;
 def int_seh_try_end : Intrinsic<[], [], [IntrReadMem, IntrWriteMem, IntrWillReturn]>;
-def int_seh_test_pointer : Intrinsic<[], [llvm_ptr_ty], [IntrReadMem, IntrWriteMem, IntrWillReturn]>;
 def int_eha_scope_begin : Intrinsic<[], [], [IntrNoMem]>;
 def int_eha_scope_end : Intrinsic<[], [], [IntrNoMem]>;
 

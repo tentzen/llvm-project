@@ -1352,8 +1352,6 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
     }
   }
 
-  EmitSehCppInvoke();
-
   // Emit the standard function epilogue.
   FinishFunction(BodyRange.getEnd());
 

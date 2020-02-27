@@ -718,6 +718,14 @@ void SelectionDAGISel::SelectBasicBlock(BasicBlock::const_iterator Begin,
                                         bool &HadTailCall) {
   // Allow creating illegal types during DAG building for the basic block.
   CurDAG->NewNodesMustHaveLegalTypes = false;
+  const Instruction& I = *Begin;
+  const BasicBlock* BB = I.getParent();
+
+  // If it IsEHa, mark CPP Scope begin for this block
+  if (BB->getModule()->getModuleFlag("eh-asynch")) {
+    if (auto FI = BB->getFirstFaultyInst())
+      SDB->MarkEHaScopeBegin(BB, FI);
+  }
 
   // Lower the instructions. If a call is emitted as a tail call, cease emitting
   // nodes for this block.
@@ -1356,7 +1364,11 @@ void SelectionDAGISel::SelectAllBasicBlocks(const Function &Fn) {
   FastISelFailed = false;
   // Initialize the Fast-ISel state, if needed.
   FastISel *FastIS = nullptr;
-  if (TM.Options.EnableFastISel) {
+
+  // <ToDo : tentzen> - disable Fast-isel udner -EHa for now
+  bool IsEHa = Fn.getParent()->getModuleFlag("eh-asynch");
+
+  if (TM.Options.EnableFastISel && !IsEHa) {
     LLVM_DEBUG(dbgs() << "Enabling fast-isel\n");
     FastIS = TLI->createFastISel(*FuncInfo, LibInfo);
   }

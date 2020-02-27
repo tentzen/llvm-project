@@ -4165,7 +4165,6 @@ void Verifier::visitInstruction(Instruction &I) {
               F->getIntrinsicID() == Intrinsic::donothing ||
               F->getIntrinsicID() == Intrinsic::seh_try_begin ||
               F->getIntrinsicID() == Intrinsic::seh_try_end ||
-              F->getIntrinsicID() == Intrinsic::seh_test_pointer ||
               F->getIntrinsicID() == Intrinsic::eha_scope_begin ||
               F->getIntrinsicID() == Intrinsic::eha_scope_end ||
               F->getIntrinsicID() == Intrinsic::coro_resume ||

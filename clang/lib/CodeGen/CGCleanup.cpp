@@ -765,6 +765,15 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough) {
     destroyOptimisticNormalEntry(*this, Scope);
     EHStack.popCleanup();
   } else {
+    // Under -EHa, if the dtor is 'outermost' scope (called, not invoked)
+    //    invoke eha_scope_end() to mark scope end before dtor
+    bool IsEHa = getLangOpts().EHAsynch;
+    EHScopeStack::stable_iterator SI = Scope.getEnclosingNormalCleanup();
+    if (IsEHa && getInvokeDest()
+              && Scope.getEnclosingEHScope() == EHStack.stable_end()
+              && SI == EHStack.stable_end())
+      EmitSehCppScopeEnd();
+
     // If we have a fallthrough and no other need for the cleanup,
     // emit it directly.
     if (HasFallthrough && !HasPrebranchedFallthrough &&
@@ -1288,88 +1297,32 @@ static llvm::FunctionCallee getEhaScopeEndFn(CodeGenModule & CGM) {
     return CGM.CreateRuntimeFunction(FTy, "llvm.eha.scope.end");
 }
 
-bool CodeGenFunction::EmitSehBranch(llvm::BasicBlock * ContBB) {
-  bool IsEHa = getLangOpts().EHAsynch;
-  const EHPersonality & Personality = EHPersonality::get(*this);
-  if (!IsEHa || !Personality.isMSVCXXPersonality())
-    return false;
-  llvm::BasicBlock * InvokeDest = getInvokeDest();
-  llvm::BasicBlock * BB = Builder.GetInsertBlock();
-  if (BB && InvokeDest) {
-    // if BB includes any "faulty instruction"
-    //   insert an Invoke before the Branch/Switch, or
-    //   append an invoke at the end if not terminated
-    llvm::Instruction * FI = BB->getFirstFaultyInst();
-    llvm::Instruction * TI = BB->getTerminator();
-    if (FI && (!TI || (isa<llvm::BranchInst>(TI) || isa<llvm::SwitchInst>(TI)))) {
-      // create a new block with label and TI
-      if (TI) {
-        // move TI from BB block to ContBB
-        TI->removeFromParent();
-        TI->insertAfter(ContBB->getFirstNonPHI());
-      }
-      // append Invike llvm.eha.scope.end at the end of BB
-      llvm::FunctionCallee SehCppScope = getEhaScopeEndFn(CGM);
-      Builder.CreateInvoke(SehCppScope, ContBB, InvokeDest);
-
-      // Split BB: move [FI..Invoke] instrs to BB2
-      llvm::BasicBlock * BB2 = BB->splitBasicBlock(FI->getIterator());
-      // Replace end branch with Invike llvm.eha.scope.begin in BB
-      llvm::Instruction * TI2 = BB->getTerminator();
-      TI2->eraseFromParent();
-      llvm::FunctionCallee SehCppScope2 = getEhaScopeBeginFn(CGM);
-      Builder.SetInsertPoint(BB);
-      Builder.CreateInvoke(SehCppScope2, BB2, InvokeDest);
-      return true; 
-    }
-  }  // end of if (IsEHa..)
-  return false;
+// Invoke a llvm.eha.scope.begin at the beginning of a CPP scope for -EHa
+void CodeGenFunction::EmitSehCppScopeBegin() {
+  assert(getLangOpts().EHAsynch);
+  llvm::BasicBlock* InvokeDest = getInvokeDest();
+  // if (!InvokeDest)
+  //  InvokeDest = getTerminateLandingPad();
+  llvm::BasicBlock* BB = Builder.GetInsertBlock();
+  assert(BB && InvokeDest);
+  llvm::BasicBlock* Cont = createBasicBlock("invoke.cont");
+  llvm::FunctionCallee SehCppScope = getEhaScopeBeginFn(CGM);
+  Builder.CreateInvoke(SehCppScope, Cont, InvokeDest);
+  EmitBlock(Cont);
+  return;
 }
 
-// if it's a CPP under -EHa, and EHStack is not empty
-void CodeGenFunction::EmitSehCppInvoke() {
-  bool IsEHa = getLangOpts().EHAsynch;
-  const EHPersonality & Personality = EHPersonality::get(*this);
-  if (!IsEHa || !Personality.isMSVCXXPersonality())
-     return;
-  llvm::BasicBlock * InvokeDest = getInvokeDest();
-  llvm::BasicBlock * BB = Builder.GetInsertBlock();
-  if (BB && InvokeDest) {
-    // if BB includes any "faulty instruction"
-    //   insert an Invoke before the Branch/Switch, or
-    //   append an invoke at the end if not terminated
-    // int IncludeFaultyInstr = !BB->empty(); // ToDo
-    llvm::Instruction * FI = BB->getFirstFaultyInst();
-    llvm::Instruction * TI = BB->getTerminator();
-    if (FI && (!TI || (isa<llvm::BranchInst>(TI) || isa<llvm::SwitchInst>(TI)))) {
-      // create a new block with label and TI
-      llvm::BasicBlock * ContBB = createBasicBlock("invoke.cont2");
-      if (TI) {
-        // move TI from BB block to ContBB
-        TI->removeFromParent();
-        TI->insertAfter(ContBB->getFirstNonPHI());
-        
-      }
-
-      // append Invike llvm.eha.scope.end at the end of BB
-      llvm::FunctionCallee SehCppScope = getEhaScopeEndFn(CGM);
-      Builder.CreateInvoke(SehCppScope, ContBB, InvokeDest);
-      
-      // Place ContBB after BB
-      CurFn->getBasicBlockList().insertAfter(BB->getIterator(), ContBB);
-
-      // Split BB: move [FI..Invoke] instrs to BB2
-      llvm::BasicBlock * BB2 = BB->splitBasicBlock(FI->getIterator());
-
-      // Replace end branch with Invike llvm.eha.scope.begin in BB
-      llvm::Instruction * TI2 = BB->getTerminator();
-      TI2->eraseFromParent();
-      llvm::FunctionCallee SehCppScope2 = getEhaScopeBeginFn(CGM);
-      Builder.SetInsertPoint(BB);
-      Builder.CreateInvoke(SehCppScope2, BB2, InvokeDest);
-      // continue on ContBB block
-      Builder.SetInsertPoint(ContBB);
-    }
-    // else do nothing
-  }
+// Invoke a llvm.eha.scope.end at the end of a CPP scope for -EHa
+//   only needed when its an outermost scope, i.e., dtor is "called", not invoked
+//   llvm.eha.scope.end is emitted before popCleanup, so it's "invoked" 
+void CodeGenFunction::EmitSehCppScopeEnd() {
+  assert(getLangOpts().EHAsynch);
+  llvm::BasicBlock* InvokeDest = getInvokeDest();
+  llvm::BasicBlock* BB = Builder.GetInsertBlock();
+  assert(BB && InvokeDest);
+  llvm::BasicBlock* Cont = createBasicBlock("invoke.cont");
+  llvm::FunctionCallee SehCppScope = getEhaScopeEndFn(CGM);
+  Builder.CreateInvoke(SehCppScope, Cont, InvokeDest);
+  EmitBlock(Cont);
+  return;
 }

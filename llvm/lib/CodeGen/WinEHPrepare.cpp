@@ -153,6 +153,7 @@ static void addTryBlockMapEntry(WinEHFuncInfo &FuncInfo, int TryLow,
     else
       HT.TypeDescriptor = cast<GlobalVariable>(TypeInfo->stripPointerCasts());
     HT.Adjectives = cast<ConstantInt>(CPI->getArgOperand(1))->getZExtValue();
+
     HT.Handler = CPI->getParent();
     if (auto *AI =
             dyn_cast<AllocaInst>(CPI->getArgOperand(2)->stripPointerCasts()))
@@ -215,6 +216,74 @@ static void calculateStateNumbersForInvokes(const Function *Fn,
   }
 }
 
+// State - incoming State of normal paths, thus non-EHPad blocks
+void llvm::calculateCXXStateForBlocks(const BasicBlock* BB, int State, 
+                                  WinEHFuncInfo& EHInfo)
+{
+  if (EHInfo.BlockToStateMap[BB])
+    return;  // skip already visited or EHPad
+
+  EHInfo.BlockToStateMap[BB] = State;  // Record state, also flag visiting
+  const llvm::Instruction* I = BB->getFirstNonPHI();
+  const llvm::Instruction* TI = BB->getTerminator();
+
+  // Retrive the new State: By-pass isa<CatchSwitchInst>(I)
+  if (isa<CleanupPadInst>(I) || isa<CatchPadInst>(I)) {
+    State = EHInfo.EHPadStateMap[I];
+    State = EHInfo.CxxUnwindMap[State].ToState;  // Retrive next State 
+  }
+  else if (isa<InvokeInst>(TI)) {
+    const Value* Callee(cast<InvokeInst>(TI)->getCalledValue());
+    const Function* Fn = dyn_cast<Function>(Callee);
+    if (Fn->isIntrinsic() && Fn->getIntrinsicID() == Intrinsic::eha_scope_end) {
+      // eha_scope_end is invoked before popCleanup, thus locates in old State
+      State = EHInfo.CxxUnwindMap[State].ToState;
+    } else {
+      // Retrive the new State from eha_scope_begin or dtor:
+      //   eha_scope_begin is invoked after pushCleanup, thus locates in new State
+      //   dtor is invoked after popCleanup, thus locates in parent State
+      State = EHInfo.InvokeStateMap[cast<InvokeInst>(TI)];
+    }
+  }
+  // Continue traveling successors recursively
+  for (auto* SuccBB : successors(BB)) {
+    calculateCXXStateForBlocks(SuccBB, State, EHInfo);
+  }
+}
+
+void llvm::calculateSEHStateForBlocks(const BasicBlock* BB, int State,
+  WinEHFuncInfo& EHInfo)
+{
+  if (EHInfo.BlockToStateMap[BB])
+    return;  // skip already visited or EHPad
+
+  EHInfo.BlockToStateMap[BB] = State;  // Record state, also flag visiting
+  const llvm::Instruction* I = BB->getFirstNonPHI();
+  const llvm::Instruction* TI = BB->getTerminator();
+
+  // Retrive the new State.  By-pass isa<CatchSwitchInst>(I)
+  if (isa<CleanupPadInst>(I) || isa<CatchPadInst>(I)) {
+    State = EHInfo.EHPadStateMap[I];
+    State = EHInfo.SEHUnwindMap[State].ToState;  // Retrive next State
+  }
+  else if (isa<InvokeInst>(TI)) {
+    const Value* Callee(cast<InvokeInst>(TI)->getCalledValue());
+    const Function* Fn = dyn_cast<Function>(Callee);
+    if (Fn->isIntrinsic() && Fn->getIntrinsicID() == Intrinsic::seh_try_end) {
+      assert(State == EHInfo.InvokeStateMap[cast<InvokeInst>(TI)]);
+      State = EHInfo.SEHUnwindMap[State].ToState;
+    }
+    else {
+      // Retrive the new State from any Invoke, in particuler seh_try_begin
+      State = EHInfo.InvokeStateMap[cast<InvokeInst>(TI)];
+    }
+  }
+  // Continue traveling successors recursively
+  for (auto* SuccBB : successors(BB)) {
+    calculateSEHStateForBlocks(SuccBB, State, EHInfo);
+  }
+}
+
 // Given BB which ends in an unwind edge, return the EHPad that this BB belongs
 // to. If the unwind edge came from an invoke, return null.
 static const BasicBlock *getEHPadFromPredecessor(const BasicBlock *BB,
@@ -244,13 +313,16 @@ static void calculateCXXStateNumbers(WinEHFuncInfo &FuncInfo,
     assert(FuncInfo.EHPadStateMap.count(CatchSwitch) == 0 &&
            "shouldn't revist catch funclets!");
 
+    int TryLow = addUnwindMapEntry(FuncInfo, ParentState, nullptr);
+    FuncInfo.EHPadStateMap[CatchSwitch] = TryLow;
+
     SmallVector<const CatchPadInst *, 2> Handlers;
     for (const BasicBlock *CatchPadBB : CatchSwitch->handlers()) {
       auto *CatchPad = cast<CatchPadInst>(CatchPadBB->getFirstNonPHI());
       Handlers.push_back(CatchPad);
+      FuncInfo.EHPadStateMap[CatchPad] = TryLow;
     }
-    int TryLow = addUnwindMapEntry(FuncInfo, ParentState, nullptr);
-    FuncInfo.EHPadStateMap[CatchSwitch] = TryLow;
+
     for (const BasicBlock *PredBlock : predecessors(BB))
       if ((PredBlock = getEHPadFromPredecessor(PredBlock,
                                                CatchSwitch->getParentPad())))
@@ -362,6 +434,7 @@ static void calculateSEHStateNumbers(WinEHFuncInfo &FuncInfo,
 
     // Everything in the __try block uses TryState as its parent state.
     FuncInfo.EHPadStateMap[CatchSwitch] = TryState;
+    FuncInfo.EHPadStateMap[CatchPad] = TryState;
     LLVM_DEBUG(dbgs() << "Assigning state #" << TryState << " to BB "
                       << CatchPadBB->getName() << '\n');
     for (const BasicBlock *PredBlock : predecessors(BB))
@@ -442,6 +515,12 @@ void llvm::calculateSEHStateNumbers(const Function *Fn,
   }
 
   calculateStateNumbersForInvokes(Fn, FuncInfo);
+  
+  bool IsEHa = Fn->getParent()->getModuleFlag("eh-asynch");
+  if (IsEHa) {
+    const BasicBlock* EntryBB = &(Fn->getEntryBlock());
+    calculateSEHStateForBlocks(EntryBB, -1, FuncInfo);
+  }
 }
 
 void llvm::calculateWinCXXEHStateNumbers(const Function *Fn,
@@ -460,6 +539,12 @@ void llvm::calculateWinCXXEHStateNumbers(const Function *Fn,
   }
 
   calculateStateNumbersForInvokes(Fn, FuncInfo);
+  
+  bool IsEHa = Fn->getParent()->getModuleFlag("eh-asynch");
+  if (IsEHa) {
+    const BasicBlock* EntryBB = &(Fn->getEntryBlock());
+    calculateCXXStateForBlocks(EntryBB, -1, FuncInfo);
+  }
 }
 
 static int addClrEHHandler(WinEHFuncInfo &FuncInfo, int HandlerParentState,
@@ -1244,6 +1329,11 @@ void WinEHFuncInfo::addIPToStateRange(const InvokeInst *II,
   assert(InvokeStateMap.count(II) &&
          "should get invoke with precomputed state");
   LabelToStateMap[InvokeBegin] = std::make_pair(InvokeStateMap[II], InvokeEnd);
+}
+
+void WinEHFuncInfo::addIPToStateRange(int State, MCSymbol* InvokeBegin,
+  MCSymbol* InvokeEnd) {
+  LabelToStateMap[InvokeBegin] = std::make_pair(State, InvokeEnd);
 }
 
 WinEHFuncInfo::WinEHFuncInfo() {}

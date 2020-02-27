@@ -1101,6 +1101,8 @@ SDValue SelectionDAGBuilder::getControlRoot() {
 void SelectionDAGBuilder::visit(const Instruction &I) {
   // Set up outgoing PHI node register values before emitting the terminator.
   if (I.isTerminator()) {
+    // report block State before terminator for IsEHa
+    AddEHaIPToStateForBlock(I.getParent());
     HandlePHINodesInSuccessorBlocks(I.getParent());
   }
 
@@ -2796,66 +2798,11 @@ void SelectionDAGBuilder::visitInvoke(const InvokeInst &I) {
       llvm_unreachable("Cannot invoke this intrinsic");
     case Intrinsic::donothing:
       // Ignore invokes to @llvm.donothing: jump directly to the next BB.
-      break;
     case Intrinsic::seh_try_begin:
-    case Intrinsic::seh_try_end:
-    case Intrinsic::seh_test_pointer:
-    {
-      // Ignore invokes to @llvm.seh_**: jump directly to the primary successor
-      // BB.
-      MachineFunction& MF = DAG.getMachineFunction();
-      MachineModuleInfo& MMI = MF.getMMI();
-      // const BasicBlock *EHPadBB = I.getSuccessor(1);
-      assert(EHPadBB);
-      // Insert a label before the invoke call to mark the try range.
-      MCSymbol* BeginLabel = MMI.getContext().createTempSymbol();
-      (void)getRoot();
-      DAG.setRoot(DAG.getEHLabel(getCurSDLoc(), getControlRoot(), BeginLabel));
-      // Insert a label at the end of the invoke call to mark the try range.
-      MCSymbol* EndLabel = MMI.getContext().createTempSymbol();
-      DAG.setRoot(DAG.getEHLabel(getCurSDLoc(), getRoot(), EndLabel));
-
-      // Inform MachineModuleInfo of range.
-      auto Pers = classifyEHPersonality(FuncInfo.Fn->getPersonalityFn());
-
-      if (MF.hasEHFunclets() && isFuncletEHPersonality(Pers)) {
-        WinEHFuncInfo* EHInfo = DAG.getMachineFunction().getWinEHFuncInfo();
-        EHInfo->addIPToStateRange(&I, BeginLabel, EndLabel);
-      }
-      break;
-    }
     case Intrinsic::eha_scope_begin:
-    {
-      MachineFunction& MF = DAG.getMachineFunction();
-      MachineModuleInfo& MMI = MF.getMMI();
-      assert(EHPadBB);
-      // Insert a label before the invoke call to mark the eha_scope range.
-      MCSymbol* BeginLabel = MMI.getContext().createTempSymbol();
-      (void)getRoot();
-      DAG.setRoot(DAG.getEHLabel(getCurSDLoc(), getControlRoot(), BeginLabel));
-      DAG.setEHaBegin(BeginLabel);
-      break;
-    }
+    case Intrinsic::seh_try_end:
     case Intrinsic::eha_scope_end:
-    {
-      MachineFunction& MF = DAG.getMachineFunction();
-      MachineModuleInfo& MMI = MF.getMMI();
-      // const BasicBlock *EHPadBB = I.getSuccessor(1);
-      assert(EHPadBB);
-      assert(DAG.getEHaBegin());
-      // Insert a label at the end of the invoke call to mark the try range.
-      MCSymbol* EndLabel = MMI.getContext().createTempSymbol();
-      DAG.setRoot(DAG.getEHLabel(getCurSDLoc(), getRoot(), EndLabel));
-      // Inform MachineModuleInfo of range.
-      auto Pers = classifyEHPersonality(FuncInfo.Fn->getPersonalityFn());
-
-      if (MF.hasEHFunclets() && isFuncletEHPersonality(Pers)) {
-        WinEHFuncInfo* EHInfo = DAG.getMachineFunction().getWinEHFuncInfo();
-        EHInfo->addIPToStateRange(&I, DAG.getEHaBegin(), EndLabel);
-      }
-      DAG.setEHaBegin(nullptr);
       break;
-    }
     case Intrinsic::experimental_patchpoint_void:
     case Intrinsic::experimental_patchpoint_i64:
       visitPatchpoint(&I, EHPadBB);
@@ -6797,9 +6744,8 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
     return;
   case Intrinsic::donothing:
   case Intrinsic::seh_try_begin:
-  case Intrinsic::seh_try_end:
-  case Intrinsic::seh_test_pointer:
   case Intrinsic::eha_scope_begin:
+  case Intrinsic::seh_try_end:
   case Intrinsic::eha_scope_end:
     // ignore
     return;
@@ -7241,34 +7187,6 @@ SelectionDAGBuilder::lowerInvokable(TargetLowering::CallLoweringInfo &CLI,
 
   return Result;
 }
-
-void SelectionDAGBuilder::lowerInvokeSEHIntrinsics() {}
-
-#if 0
-// seh_try_begin, seh_try_end, seh_test_pointer, eha_scope_begin/eha_scope_end
-void SelectionDAGBuilder::lowerInvokeSEHIntrinsics(InvokeInst & I) {
-  MachineFunction & MF = DAG.getMachineFunction();
-  MachineModuleInfo & MMI = MF.getMMI();
-  const BasicBlock * EHPadBB = I.getSuccessor(1);
-  assert(EHPadBB);
-  
-  // Insert a label before the invoke call to mark the try range.
-  MCSymbol * BeginLabel = MMI.getContext().createTempSymbol();
-  (void)getRoot();
-  DAG.setRoot(DAG.getEHLabel(getCurSDLoc(), getControlRoot(), BeginLabel));
-
-  // Insert a label at the end of the invoke call to mark the try range.
-  MCSymbol * EndLabel = MMI.getContext().createTempSymbol();
-  DAG.setRoot(DAG.getEHLabel(getCurSDLoc(), getRoot(), EndLabel));
-
-  // Inform MachineModuleInfo of range.
-  auto Pers = classifyEHPersonality(FuncInfo.Fn->getPersonalityFn());
-  if (MF.hasEHFunclets() && isFuncletEHPersonality(Pers)) {
-    WinEHFuncInfo * EHInfo = DAG.getMachineFunction().getWinEHFuncInfo();
-    EHInfo->addIPToStateRange(&I, BeginLabel, EndLabel);
-  }
-}
-#endif
 
 void SelectionDAGBuilder::LowerCallTo(ImmutableCallSite CS, SDValue Callee,
                                       bool isTailCall,
@@ -10764,4 +10682,44 @@ void SelectionDAGBuilder::visitSwitch(const SwitchInst &SI) {
 void SelectionDAGBuilder::visitFreeze(const FreezeInst &I) {
   SDValue N = getValue(I.getOperand(0));
   setValue(&I, N);
+}
+
+// if IsEHa and LLVMBB has faulty instruction, and its EH State >= 0
+//    Insert a label to mark the beginning of this block scope.
+void SelectionDAGBuilder::MarkEHaScopeBegin(const BasicBlock* BB,
+                                            const Instruction* FI)
+{
+  if (DAG.getEHaBegin())
+    return;
+  MachineFunction& MF = DAG.getMachineFunction();
+  WinEHFuncInfo* EHInfo = MF.getWinEHFuncInfo();
+  if (!EHInfo)
+    return;
+  int State = EHInfo->BlockToStateMap[BB];
+  if (State < 0)
+    return;
+
+  MachineModuleInfo& MMI = MF.getMMI();
+  MCSymbol* BeginLabel = MMI.getContext().createTempSymbol();
+  (void)DAG.getRoot();
+  DAG.setRoot(DAG.getEHLabel(getCurSDLoc(), getControlRoot(), BeginLabel));
+  DAG.setEHaBegin(BeginLabel); // Mark for AddEHaIPToStateForBlock()
+}
+
+// ToDo: EndLabel need to be placed before Block Terminator 
+void SelectionDAGBuilder::AddEHaIPToStateForBlock(const BasicBlock* BB)
+{
+  if (!DAG.getEHaBegin())
+    return;  // no faulty instruction
+
+  MachineFunction& MF = DAG.getMachineFunction();
+  MachineModuleInfo& MMI = MF.getMMI();
+  WinEHFuncInfo* EHInfo = DAG.getMachineFunction().getWinEHFuncInfo();
+  int State = EHInfo->BlockToStateMap[BB];
+  assert(State >= 0);
+  MCSymbol* EndLabel = MMI.getContext().createTempSymbol();
+  DAG.setRoot(DAG.getEHLabel(getCurSDLoc(), getRoot(), EndLabel));
+  //  report this range
+  EHInfo->addIPToStateRange(State, DAG.getEHaBegin(), EndLabel);
+  DAG.setEHaBegin(NULL);  // reset it
 }

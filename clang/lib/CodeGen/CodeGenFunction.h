@@ -753,7 +753,6 @@ public:
     /// Otherwise, they not will be modified.
     void ForceCleanup(std::initializer_list<llvm::Value**> ValuesToReload = {}) {
       assert(PerformCleanup && "Already forced cleanup");
-      CGF.EmitSehCppInvoke();
       CGF.DidCallStackSave = OldDidCallStackSave;
       CGF.PopCleanupBlocks(CleanupStackDepth, LifetimeExtendedCleanupStackSize,
                            ValuesToReload);
@@ -2577,9 +2576,8 @@ public:
   void EmitCXXTemporary(const CXXTemporary *Temporary, QualType TempType,
                         Address Ptr);
 
-  bool CodeGenFunction::EmitSehBranch(llvm::BasicBlock* BB);
-
-  void CodeGenFunction::EmitSehCppInvoke();
+  void CodeGenFunction::EmitSehCppScopeBegin();
+  void CodeGenFunction::EmitSehCppScopeEnd();
 
   llvm::Value *EmitLifetimeStart(uint64_t Size, llvm::Value *Addr);
   void EmitLifetimeEnd(llvm::Value *Size, llvm::Value *Addr);
@@ -2929,6 +2927,7 @@ public:
   void EmitSEHLeaveStmt(const SEHLeaveStmt &S);
   void EnterSEHTryStmt(const SEHTryStmt &S);
   void ExitSEHTryStmt(const SEHTryStmt &S);
+  void VolatilizeTryBlocks(llvm::BasicBlock *BB, llvm::SmallPtrSet<llvm::BasicBlock*, 10> &V);
 
   void pushSEHCleanup(CleanupKind kind,
                       llvm::Function *FinallyFunc);

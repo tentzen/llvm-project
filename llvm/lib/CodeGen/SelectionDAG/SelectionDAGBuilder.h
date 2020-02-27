@@ -574,8 +574,6 @@ public:
   lowerInvokable(TargetLowering::CallLoweringInfo &CLI,
                  const BasicBlock *EHPadBB = nullptr);
 
-  void lowerInvokeSEHIntrinsics(/* InvokeInst &I */);
-
   /// When an MBB was split during scheduling, update the
   /// references that need to refer to the last resulting block.
   void UpdateSplitBlock(MachineBasicBlock *First, MachineBasicBlock *Last);
@@ -681,6 +679,9 @@ public:
   void visitJumpTableHeader(SwitchCG::JumpTable &JT,
                             SwitchCG::JumpTableHeader &JTH,
                             MachineBasicBlock *SwitchBB);
+  // under IsEHa, report State for Blocks with potential faulty instructions
+  void MarkEHaScopeBegin(const BasicBlock* BB, const Instruction *FI);
+  void AddEHaIPToStateForBlock(const BasicBlock* BB);
 
 private:
   // These all get lowered before this pass.
@@ -820,6 +821,7 @@ private:
 
   /// Lowers CallInst to an external symbol.
   void lowerCallToExternalSymbol(const CallInst &I, const char *FunctionName);
+
 };
 
 /// This struct represents the registers (physical or virtual)
