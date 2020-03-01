@@ -1101,8 +1101,6 @@ SDValue SelectionDAGBuilder::getControlRoot() {
 void SelectionDAGBuilder::visit(const Instruction &I) {
   // Set up outgoing PHI node register values before emitting the terminator.
   if (I.isTerminator()) {
-    // report block State before terminator for IsEHa
-    AddEHaIPToStateForBlock(I.getParent());
     HandlePHINodesInSuccessorBlocks(I.getParent());
   }
 
@@ -10682,44 +10680,4 @@ void SelectionDAGBuilder::visitSwitch(const SwitchInst &SI) {
 void SelectionDAGBuilder::visitFreeze(const FreezeInst &I) {
   SDValue N = getValue(I.getOperand(0));
   setValue(&I, N);
-}
-
-// if IsEHa and LLVMBB has faulty instruction, and its EH State >= 0
-//    Insert a label to mark the beginning of this block scope.
-void SelectionDAGBuilder::MarkEHaScopeBegin(const BasicBlock* BB,
-                                            const Instruction* FI)
-{
-  if (DAG.getEHaBegin())
-    return;
-  MachineFunction& MF = DAG.getMachineFunction();
-  WinEHFuncInfo* EHInfo = MF.getWinEHFuncInfo();
-  if (!EHInfo)
-    return;
-  int State = EHInfo->BlockToStateMap[BB];
-  if (State < 0)
-    return;
-
-  MachineModuleInfo& MMI = MF.getMMI();
-  MCSymbol* BeginLabel = MMI.getContext().createTempSymbol();
-  (void)DAG.getRoot();
-  DAG.setRoot(DAG.getEHLabel(getCurSDLoc(), getControlRoot(), BeginLabel));
-  DAG.setEHaBegin(BeginLabel); // Mark for AddEHaIPToStateForBlock()
-}
-
-// ToDo: EndLabel need to be placed before Block Terminator 
-void SelectionDAGBuilder::AddEHaIPToStateForBlock(const BasicBlock* BB)
-{
-  if (!DAG.getEHaBegin())
-    return;  // no faulty instruction
-
-  MachineFunction& MF = DAG.getMachineFunction();
-  MachineModuleInfo& MMI = MF.getMMI();
-  WinEHFuncInfo* EHInfo = DAG.getMachineFunction().getWinEHFuncInfo();
-  int State = EHInfo->BlockToStateMap[BB];
-  assert(State >= 0);
-  MCSymbol* EndLabel = MMI.getContext().createTempSymbol();
-  DAG.setRoot(DAG.getEHLabel(getCurSDLoc(), getRoot(), EndLabel));
-  //  report this range
-  EHInfo->addIPToStateRange(State, DAG.getEHaBegin(), EndLabel);
-  DAG.setEHaBegin(NULL);  // reset it
 }

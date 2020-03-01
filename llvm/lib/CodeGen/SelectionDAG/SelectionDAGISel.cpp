@@ -58,6 +58,7 @@
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/CodeGen/ValueTypes.h"
+#include "llvm/CodeGen/WinEHFuncInfo.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
@@ -718,14 +719,6 @@ void SelectionDAGISel::SelectBasicBlock(BasicBlock::const_iterator Begin,
                                         bool &HadTailCall) {
   // Allow creating illegal types during DAG building for the basic block.
   CurDAG->NewNodesMustHaveLegalTypes = false;
-  const Instruction& I = *Begin;
-  const BasicBlock* BB = I.getParent();
-
-  // If it IsEHa, mark CPP Scope begin for this block
-  if (BB->getModule()->getModuleFlag("eh-asynch")) {
-    if (auto FI = BB->getFirstFaultyInst())
-      SDB->MarkEHaScopeBegin(BB, FI);
-  }
 
   // Lower the instructions. If a call is emitted as a tail call, cease emitting
   // nodes for this block.
@@ -1303,6 +1296,37 @@ bool SelectionDAGISel::PrepareEHLandingPad() {
   return true;
 }
 
+// Mark and Report IPToState for each Block under IsEHa
+void SelectionDAGISel::ReportIPToStateForBlocks(MachineFunction *MF)
+{
+  MachineModuleInfo& MMI = MF->getMMI();
+  llvm::WinEHFuncInfo* EHInfo = MF->getWinEHFuncInfo();
+  if (!EHInfo)
+    return;
+  for (auto MBBI = MF->begin(); MBBI != MF->end(); ++MBBI) {
+    MachineBasicBlock* MBB = &*MBBI;
+    const BasicBlock* BB = MBB->getBasicBlock();
+    int State = EHInfo->BlockToStateMap[BB];
+    if (State >= 0 && BB->getFirstFaultyInst()) {
+      // Report IP range only for blocks with State & Faulty inst
+      MCSymbol* BeginLabel = MMI.getContext().createTempSymbol();
+      MCSymbol* EndLabel = MMI.getContext().createTempSymbol();
+      EHInfo->addIPToStateRange(State, BeginLabel, EndLabel);
+
+      // Insert EH Labels 
+      auto MBBb = MBB->instr_begin();
+      BuildMI(*MBB, MBBb, SDB->getCurDebugLoc(),
+        TII->get(TargetOpcode::EH_LABEL)).addSym(BeginLabel);
+      auto MBBe = MBB->instr_end();
+      MachineInstr* MIb = &*(--MBBe);
+      if (!MIb->isTerminator())
+        ++MBBe;
+      BuildMI(*MBB, MBBe, SDB->getCurDebugLoc(),
+        TII->get(TargetOpcode::EH_LABEL)).addSym(EndLabel);
+    }
+  }
+}
+
 /// isFoldedOrDeadInstruction - Return true if the specified instruction is
 /// side-effect free and is either dead or folded into a generated instruction.
 /// Return false if it needs to be emitted.
@@ -1365,10 +1389,7 @@ void SelectionDAGISel::SelectAllBasicBlocks(const Function &Fn) {
   // Initialize the Fast-ISel state, if needed.
   FastISel *FastIS = nullptr;
 
-  // <ToDo : tentzen> - disable Fast-isel udner -EHa for now
-  bool IsEHa = Fn.getParent()->getModuleFlag("eh-asynch");
-
-  if (TM.Options.EnableFastISel && !IsEHa) {
+  if (TM.Options.EnableFastISel) {
     LLVM_DEBUG(dbgs() << "Enabling fast-isel\n");
     FastIS = TLI->createFastISel(*FuncInfo, LibInfo);
   }
@@ -1630,6 +1651,10 @@ void SelectionDAGISel::SelectAllBasicBlocks(const Function &Fn) {
     FuncInfo->PHINodesToUpdate.clear();
     ElidedArgCopyInstrs.clear();
   }
+
+  // IsEHa: Report Block State under -EHa 
+  if (Fn.getParent()->getModuleFlag("eh-asynch"))
+    ReportIPToStateForBlocks(MF);
 
   SP.copyToMachineFrameInfo(MF->getFrameInfo());
 

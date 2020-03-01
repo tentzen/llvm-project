@@ -765,13 +765,9 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough) {
     destroyOptimisticNormalEntry(*this, Scope);
     EHStack.popCleanup();
   } else {
-    // Under -EHa, if the dtor is 'outermost' scope (called, not invoked)
-    //    invoke eha_scope_end() to mark scope end before dtor
+    // Under -EHa, invoke eha_scope_end() to mark scope end before dtor
     bool IsEHa = getLangOpts().EHAsynch;
-    EHScopeStack::stable_iterator SI = Scope.getEnclosingNormalCleanup();
-    if (IsEHa && getInvokeDest()
-              && Scope.getEnclosingEHScope() == EHStack.stable_end()
-              && SI == EHStack.stable_end())
+    if (IsEHa && getInvokeDest())
       EmitSehCppScopeEnd();
 
     // If we have a fallthrough and no other need for the cleanup,
@@ -1298,31 +1294,36 @@ static llvm::FunctionCallee getEhaScopeEndFn(CodeGenModule & CGM) {
 }
 
 // Invoke a llvm.eha.scope.begin at the beginning of a CPP scope for -EHa
+// EmitRuntimeCallOrInvoke() does not work bcause "funclet" not set
+//   in OperandBundle properly for noThrow intrinsic (see CGCall.cpp)
 void CodeGenFunction::EmitSehCppScopeBegin() {
   assert(getLangOpts().EHAsynch);
+  llvm::FunctionCallee SehCppScope = getEhaScopeBeginFn(CGM);
   llvm::BasicBlock* InvokeDest = getInvokeDest();
-  // if (!InvokeDest)
-  //  InvokeDest = getTerminateLandingPad();
   llvm::BasicBlock* BB = Builder.GetInsertBlock();
   assert(BB && InvokeDest);
   llvm::BasicBlock* Cont = createBasicBlock("invoke.cont");
-  llvm::FunctionCallee SehCppScope = getEhaScopeBeginFn(CGM);
-  Builder.CreateInvoke(SehCppScope, Cont, InvokeDest);
+  SmallVector<llvm::OperandBundleDef, 1> BundleList =
+    getBundlesForFunclet(SehCppScope.getCallee());
+  if (CurrentFuncletPad)
+    BundleList.emplace_back("funclet", CurrentFuncletPad);
+  Builder.CreateInvoke(SehCppScope, Cont, InvokeDest, None, BundleList);
   EmitBlock(Cont);
-  return;
 }
 
 // Invoke a llvm.eha.scope.end at the end of a CPP scope for -EHa
-//   only needed when its an outermost scope, i.e., dtor is "called", not invoked
 //   llvm.eha.scope.end is emitted before popCleanup, so it's "invoked" 
 void CodeGenFunction::EmitSehCppScopeEnd() {
   assert(getLangOpts().EHAsynch);
+  llvm::FunctionCallee SehCppScope = getEhaScopeEndFn(CGM);
   llvm::BasicBlock* InvokeDest = getInvokeDest();
   llvm::BasicBlock* BB = Builder.GetInsertBlock();
   assert(BB && InvokeDest);
   llvm::BasicBlock* Cont = createBasicBlock("invoke.cont");
-  llvm::FunctionCallee SehCppScope = getEhaScopeEndFn(CGM);
-  Builder.CreateInvoke(SehCppScope, Cont, InvokeDest);
+  SmallVector<llvm::OperandBundleDef, 1> BundleList =
+    getBundlesForFunclet(SehCppScope.getCallee());
+  if (CurrentFuncletPad)
+    BundleList.emplace_back("funclet", CurrentFuncletPad);
+  Builder.CreateInvoke(SehCppScope, Cont, InvokeDest, None, BundleList);
   EmitBlock(Cont);
-  return;
 }

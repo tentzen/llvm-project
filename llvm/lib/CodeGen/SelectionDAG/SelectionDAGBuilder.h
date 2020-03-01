@@ -679,9 +679,6 @@ public:
   void visitJumpTableHeader(SwitchCG::JumpTable &JT,
                             SwitchCG::JumpTableHeader &JTH,
                             MachineBasicBlock *SwitchBB);
-  // under IsEHa, report State for Blocks with potential faulty instructions
-  void MarkEHaScopeBegin(const BasicBlock* BB, const Instruction *FI);
-  void AddEHaIPToStateForBlock(const BasicBlock* BB);
 
 private:
   // These all get lowered before this pass.

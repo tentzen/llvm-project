@@ -1137,12 +1137,15 @@ void AsmPrinter::EmitFunctionBody() {
       case TargetOpcode::EH_LABEL:
         OutStreamer->EmitLabel(MI.getOperand(0).getMCSymbol());
         // For IsEHa, insert a Nop if followed by a trap inst
-        //   Or the exception won't be caught
-        //   see MCConstantExpr::create(1,..) in WinException.cpp
+        //   Or the exception won't be caught.
+        //   (see MCConstantExpr::create(1,..) in WinException.cpp)
+        //  Ignore SDiv/UDiv bcause a DIV with Const-0 divisor 
+        //    must have being turned into an UndefValue.
+        //  Div with variable opnds must be led by at least a Load
         {
           auto MI2 = std::next(MI.getIterator());
-          if (IsEHa && (MI2->mayLoadOrStore() || // ToDo: IsDiv() ||
-                        MI2->mayRaiseFPException()))
+          if (IsEHa && MI2 != MBB.end()
+                    && (MI2->mayLoadOrStore() || MI2->mayRaiseFPException()))
             emitNops(1);
         }
         break;
