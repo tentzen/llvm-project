@@ -609,7 +609,12 @@ void CodeGenFunction::EmitGotoStmt(const GotoStmt &S) {
   // "simple" statement path.
   if (HaveInsertPoint())
     EmitStopPoint(&S);
-
+  if (S.IsLocalUnwind()) {
+    LabelStmt* LS = S.getLabel()->getStmt();
+    llvm::BlockAddress* BA = CGM.getLabelMapForLU(LS);
+    EmitSEHLocalUnwind(BA);
+    return;
+  }
   EmitBranchThroughCleanup(getJumpDestForLabel(S.getLabel()));
 }
 
@@ -1150,7 +1155,24 @@ void CodeGenFunction::EmitDeclStmt(const DeclStmt &S) {
     EmitDecl(*I);
 }
 
+void CodeGenFunction::EmitSEHLocalUnwind(llvm::BlockAddress* BA) {
+  // Make sure we are in a SEH finally block.
+  assert(IsOutlinedSEHHelper && CurFn);
+
+  llvm::Function* LUFn = GetSEHLocalUnwindFunction();
+  llvm::Value* EntryFP = &*(CurFn->getArg(1));
+
+  // Call the runtime noreturn _local_unwind for normal paths (non-exception).
+  EmitRuntimeCallOrInvoke(LUFn, { EntryFP, BA });
+}
+
 void CodeGenFunction::EmitBreakStmt(const BreakStmt &S) {
+  // Jumping out of SEH finally block
+  if (IsOutlinedSEHHelper && BreakContinueStack.empty()) {
+    assert(SEHLocalUnwindBreakBA);
+    return EmitSEHLocalUnwind(SEHLocalUnwindBreakBA);
+  }
+
   assert(!BreakContinueStack.empty() && "break stmt not in a loop or switch!");
 
   // If this code is reachable then emit a stop point (if generating
@@ -1163,6 +1185,12 @@ void CodeGenFunction::EmitBreakStmt(const BreakStmt &S) {
 }
 
 void CodeGenFunction::EmitContinueStmt(const ContinueStmt &S) {
+  // Jumping out of SEH finally block
+  if (IsOutlinedSEHHelper && BreakContinueStack.empty()) {
+    assert(SEHLocalUnwindContinueBA);
+    return EmitSEHLocalUnwind(SEHLocalUnwindContinueBA);
+  }
+
   assert(!BreakContinueStack.empty() && "continue stmt not in a loop!");
 
   // If this code is reachable then emit a stop point (if generating

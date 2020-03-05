@@ -284,9 +284,6 @@ class SelectionDAG {
 
   uint16_t NextPersistentId = 0;
 
-  // memorize the current EHa scope beginning label
-  MCSymbol * EHaBegin = nullptr;
-
 public:
   /// Clients of various APIs that cause global effects on
   /// the DAG can optionally implement this interface.  This allows the clients
@@ -500,14 +497,6 @@ public:
     if (N.getNode())
       checkForCycles(this);
     return Root;
-  }
-
-  MCSymbol * getEHaBegin() {
-    return EHaBegin;
-  }
-  MCSymbol * setEHaBegin(MCSymbol * BeginLabel) {
-    EHaBegin = BeginLabel;
-    return EHaBegin;
   }
 
 #ifndef NDEBUG

@@ -2931,12 +2931,14 @@ Sema::ActOnIndirectGotoStmt(SourceLocation GotoLoc, SourceLocation StarLoc,
   return new (Context) IndirectGotoStmt(GotoLoc, StarLoc, E);
 }
 
-static void CheckJumpOutOfSEHFinally(Sema &S, SourceLocation Loc,
+static bool CheckJumpOutOfSEHFinally(Sema &S, SourceLocation Loc,
                                      const Scope &DestScope) {
   if (!S.CurrentSEHFinally.empty() &&
       DestScope.Contains(*S.CurrentSEHFinally.back())) {
     S.Diag(Loc, diag::warn_jump_out_of_seh_finally);
+    return true;
   }
+  return false;
 }
 
 StmtResult
@@ -2946,8 +2948,16 @@ Sema::ActOnContinueStmt(SourceLocation ContinueLoc, Scope *CurScope) {
     // C99 6.8.6.2p1: A break shall appear only in or as a loop body.
     return StmtError(Diag(ContinueLoc, diag::err_continue_not_in_loop));
   }
-  CheckJumpOutOfSEHFinally(*this, ContinueLoc, *S);
-
+  bool JmpOutFinally = CheckJumpOutOfSEHFinally(*this, ContinueLoc, *S);
+  if (JmpOutFinally) {
+    Scope* TryScope = NULL, * PScope;
+    for (PScope = CurScope; PScope != S; PScope = PScope->getParent()) {
+      if (PScope->isSEHTryScope() || PScope->isSEHFinallyScope())
+        TryScope = PScope;
+    }
+    assert(TryScope && "A _finally not under a _Try");
+    TryScope->getParent()->setLUDispatchContinue(true);
+  }
   return new (Context) ContinueStmt(ContinueLoc);
 }
 
@@ -2961,8 +2971,16 @@ Sema::ActOnBreakStmt(SourceLocation BreakLoc, Scope *CurScope) {
   if (S->isOpenMPLoopScope())
     return StmtError(Diag(BreakLoc, diag::err_omp_loop_cannot_use_stmt)
                      << "break");
-  CheckJumpOutOfSEHFinally(*this, BreakLoc, *S);
-
+  bool JmpOutFinally = CheckJumpOutOfSEHFinally(*this, BreakLoc, *S);
+  if (JmpOutFinally) {
+    Scope* TryScope = NULL, * PScope;
+    for (PScope = CurScope; PScope != S; PScope = PScope->getParent()) {
+      if (PScope->isSEHTryScope() || PScope->isSEHFinallyScope())
+        TryScope = PScope;
+    }
+    assert(TryScope && TryScope->getParent() && "A _finally not under a _Try");
+    TryScope->getParent()->setLUDispatchContinue(true);
+  }
   return new (Context) BreakStmt(BreakLoc);
 }
 

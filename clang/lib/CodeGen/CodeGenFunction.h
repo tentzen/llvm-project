@@ -1264,8 +1264,16 @@ private:
 
     JumpDest BreakBlock;
     JumpDest ContinueBlock;
+
+    // SEH LU Dispatch for Break/continue from _finally,
+    //    set when entering SEH _try, reset when exiting _try
+    llvm::BasicBlock* BreakLUDispatch = nullptr;
+    llvm::BasicBlock* ContinueLUDispatch = nullptr;
   };
   SmallVector<BreakContinue, 8> BreakContinueStack;
+
+  llvm::BlockAddress* SEHLocalUnwindBreakBA;
+  llvm::BlockAddress* SEHLocalUnwindContinueBA;
 
   /// Handles cancellation exit points in OpenMP-related constructs.
   class OpenMPCancelExitStack {
@@ -2928,6 +2936,13 @@ public:
   void EnterSEHTryStmt(const SEHTryStmt &S);
   void ExitSEHTryStmt(const SEHTryStmt &S);
   void VolatilizeTryBlocks(llvm::BasicBlock *BB, llvm::SmallPtrSet<llvm::BasicBlock*, 10> &V);
+
+  void EmitSEHLocalUnwind(llvm::BlockAddress* BA);
+  bool pushSEHLocalUnwind(const SEHTryStmt& S);
+  void popSEHLocalUnwind(const SEHTryStmt& S);
+
+  llvm::Function* GenerateSEHIsLocalUnwindFunction();
+  llvm::Function* GetSEHLocalUnwindFunction();
 
   void pushSEHCleanup(CleanupKind kind,
                       llvm::Function *FinallyFunc);

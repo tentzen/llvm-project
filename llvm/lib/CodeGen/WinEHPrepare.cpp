@@ -420,8 +420,16 @@ static void calculateSEHStateNumbers(WinEHFuncInfo &FuncInfo,
 
     // Extract the filter function and the __except basic block and create a
     // state for them.
-    assert(CatchSwitch->getNumHandlers() == 1 &&
-           "SEH doesn't have multiple handlers per __try");
+    assert(CatchSwitch->getNumHandlers() &&
+           "SEH must have at least one handler per __try");
+
+    // We extend SEH handlers to dispatch local unwind 
+    SmallVector<const CatchPadInst*, 8> Handlers;
+    for (const BasicBlock* CatchPadBB : CatchSwitch->handlers()) {
+      auto* CatchPad = cast<CatchPadInst>(CatchPadBB->getFirstNonPHI());
+      Handlers.push_back(CatchPad);
+    }
+
     const auto *CatchPad =
         cast<CatchPadInst>((*CatchSwitch->handler_begin())->getFirstNonPHI());
     const BasicBlock *CatchPadBB = CatchPad->getParent();
@@ -430,6 +438,28 @@ static void calculateSEHStateNumbers(WinEHFuncInfo &FuncInfo,
     const Function *Filter = dyn_cast<Function>(FilterOrNull);
     assert((Filter || FilterOrNull->isNullValue()) &&
            "unexpected filter value");
+
+    // For now, there is no except() handler emitted in a LU pseudo Catchswitch
+    //   all handlers are for local unwind dispatches that are in ParentState
+    if (Filter && Filter->getName().startswith("__IsLocalUnwind")) {
+      FuncInfo.EHPadStateMap[CatchSwitch] = ParentState;
+      for (const auto* CatchPad : Handlers) {
+        const Constant* IsLuOrNull =
+          cast<Constant>(CatchPad->getArgOperand(0)->stripPointerCasts());
+        const Function* IsLu = dyn_cast<Function>(IsLuOrNull);
+        assert((IsLu && IsLu->getName().startswith("__IsLocalUnwind")) &&
+          "unexpected IsLu value");
+        FuncInfo.FuncletBaseStateMap[CatchPad] = ParentState;
+      }
+      for (const BasicBlock* PredBlock : predecessors(BB)) {
+        if ((PredBlock = getEHPadFromPredecessor(PredBlock,
+          CatchSwitch->getParentPad())))
+          calculateSEHStateNumbers(FuncInfo, PredBlock->getFirstNonPHI(),
+            ParentState);
+      }
+      return;
+    }
+
     int TryState = addSEHExcept(FuncInfo, ParentState, Filter, CatchPadBB);
 
     // Everything in the __try block uses TryState as its parent state.

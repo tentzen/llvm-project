@@ -134,6 +134,9 @@ public:
 
     /// This is the scope of a C++ catch statement.
     CatchScope = 0x1000000,
+
+    /// This scope corresponds to a SEH finally.
+    SEHFinallyScope = 0x2000000,
   };
 
 private:
@@ -162,6 +165,10 @@ private:
   /// PrototypeIndex - This is the number of parameters currently
   /// declared in this scope.
   unsigned short PrototypeIndex;
+
+  // SEH Local Unwind: flags indicate outermost _Try in this scope 
+  //     must dispatch LUBreak/LUContinue
+  bool LUDispatchBreak = false, LUDispatchContinue = false;
 
   /// FnParent - If this scope has a parent scope that is a function body, this
   /// pointer is non-null and points to it.  This is used for label processing.
@@ -447,6 +454,15 @@ public:
 
   /// Determine whether this scope is a SEH '__except' block.
   bool isSEHExceptScope() const { return getFlags() & Scope::SEHExceptScope; }
+
+  /// Determine whether this scope is a SEH '__except' block.
+  bool isSEHFinallyScope() const { return getFlags() & Scope::SEHFinallyScope; }
+
+  // SEH Local Unwind dispatch
+  bool isLUDispatchBreak() const { return LUDispatchBreak; }
+  bool isLUDispatchContinue() const { return LUDispatchContinue; }
+  void setLUDispatchBreak(bool F) { LUDispatchBreak = F; }
+  void setLUDispatchContinue(bool F) { LUDispatchContinue = F; }
 
   /// Determine whether this scope is a compound statement scope.
   bool isCompoundStmtScope() const {

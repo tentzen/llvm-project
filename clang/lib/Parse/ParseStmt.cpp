@@ -470,6 +470,8 @@ StmtResult Parser::ParseSEHTryBlock() {
   assert(Tok.is(tok::kw___try) && "Expected '__try'");
   SourceLocation TryLoc = ConsumeToken();
 
+  Scope* ParentScope = getCurScope();
+
   if (Tok.isNot(tok::l_brace))
     return StmtError(Diag(Tok, diag::err_expected) << tok::l_brace);
 
@@ -494,10 +496,21 @@ StmtResult Parser::ParseSEHTryBlock() {
   if(Handler.isInvalid())
     return Handler;
 
-  return Actions.ActOnSEHTryBlock(false /* IsCXXTry */,
-                                  TryLoc,
-                                  TryBlock.get(),
-                                  Handler.get());
+  StmtResult Res = Actions.ActOnSEHTryBlock(false /* IsCXXTry */,
+                                            TryLoc,
+                                            TryBlock.get(),
+                                            Handler.get());
+  // propagate Local Unwind Dispatch from scope to SEHTry Statement
+  SEHTryStmt* TS = cast<SEHTryStmt>(Res.get());
+  if (ParentScope->isLUDispatchBreak()) {
+    TS->setLUDispatchBreak();
+    ParentScope->setLUDispatchBreak(false);
+  }
+  if (ParentScope->isLUDispatchContinue()) {
+    TS->setLUDispatchContinue();
+    ParentScope->setLUDispatchContinue(false);
+  }
+  return Res;
 }
 
 /// ParseSEHExceptBlock - Handle __except
@@ -565,7 +578,7 @@ StmtResult Parser::ParseSEHFinallyBlock(SourceLocation FinallyLoc) {
   if (Tok.isNot(tok::l_brace))
     return StmtError(Diag(Tok, diag::err_expected) << tok::l_brace);
 
-  ParseScope FinallyScope(this, 0);
+  ParseScope FinallyScope(this, Scope::SEHFinallyScope);
   Actions.ActOnStartSEHFinallyBlock();
 
   StmtResult Block(ParseCompoundStatement());

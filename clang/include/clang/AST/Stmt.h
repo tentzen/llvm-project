@@ -2481,6 +2481,7 @@ public:
 class GotoStmt : public Stmt {
   LabelDecl *Label;
   SourceLocation LabelLoc;
+  bool LocalUnwind = false;
 
 public:
   GotoStmt(LabelDecl *label, SourceLocation GL, SourceLocation LL)
@@ -2501,6 +2502,9 @@ public:
 
   SourceLocation getBeginLoc() const { return getGotoLoc(); }
   SourceLocation getEndLoc() const { return getLabelLoc(); }
+
+  bool IsLocalUnwind() const { return LocalUnwind; }
+  void setLocalUnwind() { LocalUnwind = true; }
 
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == GotoStmtClass;
@@ -3289,6 +3293,10 @@ class SEHTryStmt : public Stmt {
   SourceLocation  TryLoc;
   Stmt *Children[2];
 
+  // SEH Local Unwind dispatch target info
+  bool LUDispatchBreak = false, LUDispatchContinue = false;
+  llvm::SmallVector<LabelStmt*, 2> *LUDispatchTargets = nullptr;  // LU Goto targets
+
   enum { TRY = 0, HANDLER = 1 };
 
   SEHTryStmt(bool isCXXTry, // true if 'try' otherwise '__try'
@@ -3319,6 +3327,19 @@ public:
   /// Returns 0 if not defined
   SEHExceptStmt  *getExceptHandler() const;
   SEHFinallyStmt *getFinallyHandler() const;
+
+  // SEH Local Unwind dispatch
+  bool isLUDispatchBreak() const { return LUDispatchBreak; }
+  bool isLUDispatchContinue() const { return LUDispatchContinue; }
+  void setLUDispatchBreak() { LUDispatchBreak = true; }
+  void setLUDispatchContinue() { LUDispatchContinue = true; }
+
+  llvm::SmallVector<LabelStmt*, 2> *getLUDispatchTargets() const {
+    return LUDispatchTargets;
+  }
+  void setLUDispatchTargets(llvm::SmallVector<LabelStmt*, 2> *V) {
+    LUDispatchTargets = V;
+  }
 
   child_range children() {
     return child_range(Children, Children+2);
