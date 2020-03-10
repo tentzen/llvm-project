@@ -767,7 +767,8 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough) {
   } else {
     // Under -EHa, invoke eha_scope_end() to mark scope end before dtor
     bool IsEHa = getLangOpts().EHAsynch;
-    if (IsEHa && getInvokeDest())
+    const EHPersonality& Personality = EHPersonality::get(*this);
+    if (IsEHa && getInvokeDest() && Personality.isMSVCXXPersonality())
       EmitSehCppScopeEnd();
 
     // If we have a fallthrough and no other need for the cleanup,

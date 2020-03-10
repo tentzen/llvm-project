@@ -497,7 +497,16 @@ public:
 
   EHScopeStack EHStack;
   llvm::SmallVector<char, 256> LifetimeExtendedCleanupStack;
-  llvm::SmallVector<const JumpDest *, 2> SEHTryEpilogueStack;
+
+  // SEHTryEpilogueStack - This keeps track of where leave should jump to.
+  struct SEHTryEpilog {
+    SEHTryEpilog(JumpDest *Leave, llvm::BasicBlock* LUDispatch)
+      : LeaveDest(Leave), LeaveLUDispatch(LUDispatch) {}
+
+    const JumpDest* LeaveDest;
+    llvm::BasicBlock* LeaveLUDispatch;
+  };
+  llvm::SmallVector<SEHTryEpilog *, 2> SEHTryEpilogueStack;
 
   llvm::Instruction *CurrentFuncletPad = nullptr;
 
@@ -1272,8 +1281,10 @@ private:
   };
   SmallVector<BreakContinue, 8> BreakContinueStack;
 
-  llvm::BlockAddress* SEHLocalUnwindBreakBA;
-  llvm::BlockAddress* SEHLocalUnwindContinueBA;
+  llvm::BlockAddress* SEHLocalUnwindBreakBA = nullptr;
+  llvm::BlockAddress* SEHLocalUnwindContinueBA = nullptr;
+  llvm::BlockAddress* SEHLocalUnwindReturnBA = nullptr;
+  llvm::BlockAddress* SEHLocalUnwindLeaveBA = nullptr;
 
   /// Handles cancellation exit points in OpenMP-related constructs.
   class OpenMPCancelExitStack {

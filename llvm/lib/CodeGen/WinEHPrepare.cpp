@@ -220,15 +220,17 @@ static void calculateStateNumbersForInvokes(const Function *Fn,
 void llvm::calculateCXXStateForBlocks(const BasicBlock* BB, int State, 
                                   WinEHFuncInfo& EHInfo)
 {
-  if (EHInfo.BlockToStateMap[BB])
+  if (EHInfo.BlockToStateMap.count(BB))
     return;  // skip already visited or EHPad
 
-  EHInfo.BlockToStateMap[BB] = State;  // Record state, also flag visiting
   const llvm::Instruction* I = BB->getFirstNonPHI();
   const llvm::Instruction* TI = BB->getTerminator();
+  if (I->isEHPad())
+    State = EHInfo.EHPadStateMap[I];
+  EHInfo.BlockToStateMap[BB] = State;  // Record state, also flag visiting
 
-  // Retrive the new State: By-pass isa<CatchSwitchInst>(I)
   if (isa<CleanupPadInst>(I) || isa<CatchPadInst>(I)) {
+    // Retrive the new State 
     State = EHInfo.EHPadStateMap[I];
     State = EHInfo.CxxUnwindMap[State].ToState;  // Retrive next State 
   }
@@ -254,22 +256,31 @@ void llvm::calculateCXXStateForBlocks(const BasicBlock* BB, int State,
 void llvm::calculateSEHStateForBlocks(const BasicBlock* BB, int State,
   WinEHFuncInfo& EHInfo)
 {
-  if (EHInfo.BlockToStateMap[BB])
-    return;  // skip already visited or EHPad
+  if (EHInfo.BlockToStateMap.count(BB))
+    return;  // skip already visited 
 
-  EHInfo.BlockToStateMap[BB] = State;  // Record state, also flag visiting
   const llvm::Instruction* I = BB->getFirstNonPHI();
   const llvm::Instruction* TI = BB->getTerminator();
-
-  // Retrive the new State.  By-pass isa<CatchSwitchInst>(I)
-  if (isa<CleanupPadInst>(I) || isa<CatchPadInst>(I)) {
+  if (I->isEHPad())
     State = EHInfo.EHPadStateMap[I];
-    State = EHInfo.SEHUnwindMap[State].ToState;  // Retrive next State
-  }
+  EHInfo.BlockToStateMap[BB] = State;  // Record state, also flag visiting
+
+  if (isa<CatchPadInst>(I)) {
+    const Constant* FilterOrNull =
+      cast<Constant>(cast<CatchPadInst>(I)->getArgOperand(0)->stripPointerCasts());
+    const Function* Filter = dyn_cast<Function>(FilterOrNull);
+    if (!Filter || !Filter->getName().startswith("__IsLocalUnwind"))
+      State = EHInfo.SEHUnwindMap[State].ToState;
+  } 
+  else if (isa<CleanupPadInst>(I)) {
+    // Retrive the new State.  
+    State = EHInfo.SEHUnwindMap[State].ToState;
+  } 
   else if (isa<InvokeInst>(TI)) {
     const Value* Callee(cast<InvokeInst>(TI)->getCalledValue());
     const Function* Fn = dyn_cast<Function>(Callee);
-    if (Fn->isIntrinsic() && Fn->getIntrinsicID() == Intrinsic::seh_try_end) {
+    if (Fn && Fn->isIntrinsic() && 
+        Fn->getIntrinsicID() == Intrinsic::seh_try_end) {
       assert(State == EHInfo.InvokeStateMap[cast<InvokeInst>(TI)]);
       State = EHInfo.SEHUnwindMap[State].ToState;
     }
@@ -449,7 +460,7 @@ static void calculateSEHStateNumbers(WinEHFuncInfo &FuncInfo,
         const Function* IsLu = dyn_cast<Function>(IsLuOrNull);
         assert((IsLu && IsLu->getName().startswith("__IsLocalUnwind")) &&
           "unexpected IsLu value");
-        FuncInfo.FuncletBaseStateMap[CatchPad] = ParentState;
+        FuncInfo.EHPadStateMap[CatchPad] = ParentState;
       }
       for (const BasicBlock* PredBlock : predecessors(BB)) {
         if ((PredBlock = getEHPadFromPredecessor(PredBlock,

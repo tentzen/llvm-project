@@ -3295,6 +3295,7 @@ class SEHTryStmt : public Stmt {
 
   // SEH Local Unwind dispatch target info
   bool LUDispatchBreak = false, LUDispatchContinue = false;
+  bool LUDispatchReturn = false, LUDispatchLeave = false;
   llvm::SmallVector<LabelStmt*, 2> *LUDispatchTargets = nullptr;  // LU Goto targets
 
   enum { TRY = 0, HANDLER = 1 };
@@ -3331,8 +3332,12 @@ public:
   // SEH Local Unwind dispatch
   bool isLUDispatchBreak() const { return LUDispatchBreak; }
   bool isLUDispatchContinue() const { return LUDispatchContinue; }
+  bool isLUDispatchReturn() const { return LUDispatchReturn; }
+  bool isLUDispatchLeave() const { return LUDispatchLeave; }
   void setLUDispatchBreak() { LUDispatchBreak = true; }
   void setLUDispatchContinue() { LUDispatchContinue = true; }
+  void setLUDispatchReturn() { LUDispatchReturn = true; }
+  void setLUDispatchLeave() { LUDispatchLeave = true; }
 
   llvm::SmallVector<LabelStmt*, 2> *getLUDispatchTargets() const {
     return LUDispatchTargets;

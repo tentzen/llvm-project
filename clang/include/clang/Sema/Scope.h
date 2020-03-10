@@ -169,6 +169,7 @@ private:
   // SEH Local Unwind: flags indicate outermost _Try in this scope 
   //     must dispatch LUBreak/LUContinue
   bool LUDispatchBreak = false, LUDispatchContinue = false;
+  bool LUDispatchReturn = false, LUDispatchLeave = false;
 
   /// FnParent - If this scope has a parent scope that is a function body, this
   /// pointer is non-null and points to it.  This is used for label processing.
@@ -461,8 +462,12 @@ public:
   // SEH Local Unwind dispatch
   bool isLUDispatchBreak() const { return LUDispatchBreak; }
   bool isLUDispatchContinue() const { return LUDispatchContinue; }
+  bool isLUDispatchReturn() const { return LUDispatchReturn; }
+  bool isLUDispatchLeave() const { return LUDispatchLeave; }
   void setLUDispatchBreak(bool F) { LUDispatchBreak = F; }
   void setLUDispatchContinue(bool F) { LUDispatchContinue = F; }
+  void setLUDispatchReturn(bool F) { LUDispatchReturn = F; }
+  void setLUDispatchLeave(bool F) { LUDispatchLeave = F; }
 
   /// Determine whether this scope is a compound statement scope.
   bool isCompoundStmtScope() const {

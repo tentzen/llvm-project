@@ -435,6 +435,7 @@ void JumpScopeChecker::BuildScopeInformation(Stmt *S,
       BuildScopeInformation(Except->getBlock(), NewParentScope);
     } else if (SEHFinallyStmt *Finally = TS->getFinallyHandler()) {
       unsigned NewParentScope = Scopes.size();
+      ScopeToTryStmt[NewParentScope] = TS;
       Scopes.push_back(GotoScope(ParentScope,
                                  diag::note_protected_by_seh_finally,
                                  diag::note_exits_seh_finally,
@@ -955,7 +956,8 @@ void JumpScopeChecker::RecordLocalUnwindTargets(Stmt* From, Stmt* To,
   unsigned OuterTryOrFinally = 0;
   // locate the outermost Try/Finally
   for (unsigned J = IScope; J > ToScope; J = Scopes[J].ParentScope) {
-    if (Scopes[J].InDiag == diag::note_protected_by_seh_try) 
+    if (Scopes[J].InDiag == diag::note_protected_by_seh_try ||
+        Scopes[J].InDiag == diag::note_protected_by_seh_finally)
       OuterTryOrFinally = J;
   }
   assert(OuterTryOrFinally > 0);

@@ -1622,10 +1622,25 @@ void SelectionDAGBuilder::visitCatchPad(const CatchPadInst &I) {
   // In MSVC C++ and CoreCLR, catchblocks are funclets and need prologues.
   if (IsMSVCCXX || IsCoreCLR)
     CatchPadMBB->setIsEHFuncletEntry();
-  // Wasm does not need catchpads anymore
+
+  // Report its State if address-taken (i.e., local_unwind dispatch block)
+  MCSymbol* BeginLabel = nullptr;
+  WinEHFuncInfo* EHInfo = DAG.getMachineFunction().getWinEHFuncInfo();
+  MachineFunction& MF = DAG.getMachineFunction();
+  MachineModuleInfo& MMI = MF.getMMI();
+  int State = EHInfo->EHPadStateMap[&I];
+  if (State >= 0 && I.getParent()->hasAddressTaken() && IsSEH) {
+    BeginLabel = MMI.getContext().createTempSymbol();
+    DAG.setRoot(DAG.getEHLabel(getCurSDLoc(), getControlRoot(), BeginLabel));
+  }
   if (!IsWasmCXX)
     DAG.setRoot(DAG.getNode(ISD::CATCHPAD, getCurSDLoc(), MVT::Other,
                             getControlRoot()));
+  if (BeginLabel) {
+    MCSymbol* EndLabel = MMI.getContext().createTempSymbol();
+    DAG.setRoot(DAG.getEHLabel(getCurSDLoc(), getRoot(), EndLabel));
+    EHInfo->addIPToStateRange(State, BeginLabel, EndLabel);
+  }
 }
 
 void SelectionDAGBuilder::visitCatchRet(const CatchReturnInst &I) {

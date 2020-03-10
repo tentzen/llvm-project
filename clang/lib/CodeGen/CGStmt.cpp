@@ -1062,6 +1062,12 @@ void CodeGenFunction::EmitReturnOfRValue(RValue RV, QualType Ty) {
 /// if the function returns void, or may be missing one if the function returns
 /// non-void.  Fun stuff :).
 void CodeGenFunction::EmitReturnStmt(const ReturnStmt &S) {
+  // Return from SEH finally block
+  if (IsOutlinedSEHHelper) {
+    assert(SEHLocalUnwindReturnBA);
+    return EmitSEHLocalUnwind(SEHLocalUnwindReturnBA);
+  }
+
   if (requiresReturnValueCheck()) {
     llvm::Constant *SLoc = EmitCheckSourceLocation(S.getBeginLoc());
     auto *SLocPtr =

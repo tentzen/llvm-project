@@ -510,6 +510,14 @@ StmtResult Parser::ParseSEHTryBlock() {
     TS->setLUDispatchContinue();
     ParentScope->setLUDispatchContinue(false);
   }
+  if (ParentScope->isLUDispatchReturn()) {
+    TS->setLUDispatchReturn();
+    ParentScope->setLUDispatchReturn(false);
+  }
+  if (ParentScope->isLUDispatchLeave()) {
+    TS->setLUDispatchLeave();
+    ParentScope->setLUDispatchLeave(false);
+  }
   return Res;
 }
 
