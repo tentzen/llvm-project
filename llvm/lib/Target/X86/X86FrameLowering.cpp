@@ -1458,6 +1458,16 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
         .setMIFlag(MachineInstr::FrameSetup);
     }
 
+    // <REVIEW: tentzen> - SEHSetFrameOffset is used in intrinsic eh.recoverfp
+    //  that is only referenced in filter for frame-ptr recovering
+    //  However, when BasePtr is used (ex, for realign),
+    //  locals are addressed via BasePtr (not FP). Its offset is 0.
+    //  NOTE! this is not an idea fix.  when realignment > 16, 
+    //   eh.recoverfp (for filter) and eh.recoveresp (for local_unwind in finally)
+    //   need extra adjustment for that alignemnt gap!
+    if (isAsynchronousEHPersonality(Personality))
+      MF.getWinEHFuncInfo()->SEHSetFrameOffset = 0;
+
     if (X86FI->getHasSEHFramePtrSave() && !IsFunclet) {
       // Stash the value of the frame pointer relative to the base pointer for
       // Win32 EH. This supports Win32 EH, which does the inverse of the above:

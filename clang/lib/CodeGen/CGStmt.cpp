@@ -1167,6 +1167,14 @@ void CodeGenFunction::EmitSEHLocalUnwind(llvm::BlockAddress* BA) {
 
   llvm::Function* LUFn = GetSEHLocalUnwindFunction();
   llvm::Value* EntryFP = &*(CurFn->getArg(1));
+  
+  // <tentzen> - local_unwind requires Establisher, not FP
+  //    Undo the recovering of parent FP done by _finally funclets 
+  llvm::Function* RecoverFPIntrin =
+    CGM.getIntrinsic(llvm::Intrinsic::eh_recoveresp);
+  llvm::Constant* ParentI8Fn =
+    llvm::ConstantExpr::getBitCast(ParentCGF->CurFn, Int8PtrTy);
+  EntryFP = Builder.CreateCall(RecoverFPIntrin, { ParentI8Fn, EntryFP });
 
   // Call the runtime noreturn _local_unwind for normal paths (non-exception).
   EmitRuntimeCallOrInvoke(LUFn, { EntryFP, BA });

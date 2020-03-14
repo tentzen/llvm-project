@@ -450,6 +450,13 @@ def int_eh_recoverfp : Intrinsic<[llvm_ptr_ty],
                                  [llvm_ptr_ty, llvm_ptr_ty],
                                  [IntrNoMem]>;
 
+// The reverse operation of int_eh_recoverfp above
+// Given the pointer to the local variable area in a _finally, return the 
+// parent frames Establisher SP for the use of _local_unwind.
+def int_eh_recoveresp : Intrinsic<[llvm_ptr_ty],
+                                 [llvm_ptr_ty, llvm_ptr_ty],
+                                 [IntrNoMem]>;
+
 // To mark the beginning/end of a try-scope for Windows SEH -EHa
 //  calls/invokes to these intrinsics are placed to model control flows
 //    caused by HW exceptions under option -EHa.

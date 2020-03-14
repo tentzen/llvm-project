@@ -258,6 +258,9 @@ public:
   CodeGenModule &CGM;  // Per-module state.
   const TargetInfo &Target;
 
+  // For outliner helper only 
+  CodeGenFunction* ParentCGF;
+
   typedef std::pair<llvm::Value *, llvm::Value *> ComplexPairTy;
   LoopInfoStack LoopStack;
   CGBuilderTy Builder;

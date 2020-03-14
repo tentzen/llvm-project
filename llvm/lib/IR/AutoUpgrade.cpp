@@ -486,6 +486,10 @@ static bool UpgradeX86IntrinsicFunction(Function *F, StringRef Name,
     NewFn = Intrinsic::getDeclaration(F->getParent(), Intrinsic::eh_recoverfp);
     return true;
   }
+  if (Name == "seh.recoveresp") {
+    NewFn = Intrinsic::getDeclaration(F->getParent(), Intrinsic::eh_recoveresp);
+    return true;
+  }
 
   return false;
 }

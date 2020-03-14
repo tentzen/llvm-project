@@ -1667,12 +1667,6 @@ bool CodeGenFunction::pushSEHLocalUnwind(const SEHTryStmt& S) {
   if (NumHandlers == 0)
     return false;
 
-  // <REVIEW: tentzen> -- _local_unwind() requires RSP, not FP (frame-pointer)
-  //   -stackrealign forces Locals addressed via RSP so that  
-  //   RSP (not FP) is the one passed to _finally & _local_unwind().
-  // <TODO> Need a better way to make BE pass RSP to funclet.
-  CurFn->addFnAttr("stackrealign");
-
   EHCatchScope* CatchScope = EHStack.pushCatch(NumHandlers);
 
   // <tentzen> -- A continue search filter with empty _except is NOP
@@ -2011,9 +2005,7 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
   }
 
   llvm::Value *ParentFP = EntryFP;
-  // <tentzen> -- when the parent stack is realigned, locals are 
-  //              addressed via SP, not FP
-  if (IsFilter && !ParentCGF.CurFn->hasFnAttribute("stackrealign")) {
+  if (IsFilter) {
     // Given whatever FP the runtime provided us in EntryFP, recover the true
     // frame pointer of the parent function. We only need to do this in filters,
     // since finally funclets recover the parent FP for us.
@@ -2268,6 +2260,7 @@ void CodeGenFunction::pushSEHCleanup(CleanupKind Kind,
 
 void CodeGenFunction::EnterSEHTryStmt(const SEHTryStmt &S) {
   CodeGenFunction HelperCGF(CGM, /*suppressNewContext=*/true);
+  HelperCGF.ParentCGF = this;
   if (const SEHFinallyStmt *Finally = S.getFinallyHandler()) {
     // Outline the finally block.
     llvm::Function *FinallyFunc =
