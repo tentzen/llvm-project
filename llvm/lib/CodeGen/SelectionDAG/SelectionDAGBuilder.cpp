@@ -1625,13 +1625,14 @@ void SelectionDAGBuilder::visitCatchPad(const CatchPadInst &I) {
 
   // Report its State if address-taken (i.e., local_unwind dispatch block)
   MCSymbol* BeginLabel = nullptr;
+  const BasicBlock* BB = CatchPadMBB->getBasicBlock();
   WinEHFuncInfo* EHInfo = DAG.getMachineFunction().getWinEHFuncInfo();
   MachineFunction& MF = DAG.getMachineFunction();
   MachineModuleInfo& MMI = MF.getMMI();
   int State = EHInfo->EHPadStateMap[&I];
   if (State >= 0 && I.getParent()->hasAddressTaken() && IsSEH) {
-    BeginLabel = MMI.getContext().createTempSymbol();
-    DAG.setRoot(DAG.getEHLabel(getCurSDLoc(), getControlRoot(), BeginLabel));
+    BeginLabel = &*MMI.getAddrLabelSymbolToEmit(BB).front();
+    BeginLabel->setLUTarget(true); // Mark it's a LU target
   }
   if (!IsWasmCXX)
     DAG.setRoot(DAG.getNode(ISD::CATCHPAD, getCurSDLoc(), MVT::Other,
@@ -2793,6 +2794,7 @@ void SelectionDAGBuilder::visitInvoke(const InvokeInst &I) {
   // catchswitch for successors.
   MachineBasicBlock *Return = FuncInfo.MBBMap[I.getSuccessor(0)];
   const BasicBlock *EHPadBB = I.getSuccessor(1);
+  MachineBasicBlock* CleanupMBB = FuncInfo.MBBMap[EHPadBB];
 
   // Deopt bundles are lowered in LowerCallSiteWithDeoptBundle, and we don't
   // have to do anything here to lower funclet bundles.
@@ -2811,10 +2813,12 @@ void SelectionDAGBuilder::visitInvoke(const InvokeInst &I) {
       llvm_unreachable("Cannot invoke this intrinsic");
     case Intrinsic::donothing:
       // Ignore invokes to @llvm.donothing: jump directly to the next BB.
-    case Intrinsic::seh_try_begin:
     case Intrinsic::eha_scope_begin:
-    case Intrinsic::seh_try_end:
     case Intrinsic::eha_scope_end:
+    case Intrinsic::seh_try_begin:
+    case Intrinsic::seh_try_end:
+      if (CleanupMBB) // a CleanupPad, referenced by EH table
+        CleanupMBB->setHasAddressTaken(); // so dtor-funclet not removed by opts
       break;
     case Intrinsic::experimental_patchpoint_void:
     case Intrinsic::experimental_patchpoint_i64:

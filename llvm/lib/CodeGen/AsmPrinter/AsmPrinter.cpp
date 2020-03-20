@@ -3018,9 +3018,17 @@ void AsmPrinter::EmitBasicBlockStart(const MachineBasicBlock &MBB) {
 
     // MBBs can have their address taken as part of CodeGen without having
     // their corresponding BB's address taken in IR
-    if (BB->hasAddressTaken())
-      for (MCSymbol *Sym : MMI->getAddrLabelSymbolToEmit(BB))
-        OutStreamer->EmitLabel(Sym);
+    if (BB->hasAddressTaken()) {
+      for (MCSymbol* Sym : MMI->getAddrLabelSymbolToEmit(BB)) {
+        if (Sym->isLUTarget()) {
+          emitNops(1); // a Nop before LU target
+          OutStreamer->EmitLabel(Sym);
+          emitNops(1); // a Nop after LU target
+        }
+        else
+          OutStreamer->EmitLabel(Sym);
+      }
+    }
   }
 
   // Print some verbose block comments.

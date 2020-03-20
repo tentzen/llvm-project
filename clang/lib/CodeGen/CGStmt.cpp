@@ -1168,6 +1168,9 @@ void CodeGenFunction::EmitSEHLocalUnwind(llvm::BlockAddress* BA) {
   llvm::Function* LUFn = GetSEHLocalUnwindFunction();
   llvm::Value* EntryFP = &*(CurFn->getArg(1));
   
+  // <ToDo: tentzen> - Turn off Inlining a Local_unwind funclet for now
+  CurFn->addFnAttr(llvm::Attribute::NoInline);
+
   // <tentzen> - local_unwind requires Establisher, not FP
   //    Undo the recovering of parent FP done by _finally funclets 
   llvm::Function* RecoverFPIntrin =

@@ -310,8 +310,8 @@ const MCExpr *WinException::create32bitRef(const GlobalValue *GV) {
   return create32bitRef(Asm->getSymbol(GV));
 }
 
-const MCExpr *WinException::getLabel(const MCSymbol *Label) {
-  if (isAArch64)
+const MCExpr *WinException::getLabel(const MCSymbol *Label, bool NoOffset1) {
+  if (isAArch64 || NoOffset1)
     return MCSymbolRefExpr::create(Label, MCSymbolRefExpr::VK_COFF_IMGREL32,
                                    Asm->OutContext);
   return MCBinaryExpr::createAdd(create32bitRef(Label),
@@ -384,12 +384,12 @@ struct InvokeStateChange {
 /// reported is the first change to something other than NullState, and a
 /// change back to NullState is always reported at the end of iteration).
 class InvokeStateChangeIterator {
-  InvokeStateChangeIterator(const WinEHFuncInfo &EHInfo,
+  InvokeStateChangeIterator(const WinEHFuncInfo &EHInfo, MachineModuleInfo *MMI,
                             MachineFunction::const_iterator MFI,
                             MachineFunction::const_iterator MFE,
                             MachineBasicBlock::const_iterator MBBI,
                             int BaseState)
-      : EHInfo(EHInfo), MFI(MFI), MFE(MFE), MBBI(MBBI), BaseState(BaseState) {
+      : EHInfo(EHInfo), MMI(MMI), MFI(MFI), MFE(MFE), MBBI(MBBI), BaseState(BaseState) {
     LastStateChange.PreviousEndLabel = nullptr;
     LastStateChange.NewStartLabel = nullptr;
     LastStateChange.NewState = BaseState;
@@ -398,7 +398,7 @@ class InvokeStateChangeIterator {
 
 public:
   static iterator_range<InvokeStateChangeIterator>
-  range(const WinEHFuncInfo &EHInfo, MachineFunction::const_iterator Begin,
+  range(const WinEHFuncInfo &EHInfo, MachineModuleInfo* MMI, MachineFunction::const_iterator Begin,
         MachineFunction::const_iterator End, int BaseState = NullState) {
     // Reject empty ranges to simplify bookkeeping by ensuring that we can get
     // the end of the last block.
@@ -406,8 +406,8 @@ public:
     auto BlockBegin = Begin->begin();
     auto BlockEnd = std::prev(End)->end();
     return make_range(
-        InvokeStateChangeIterator(EHInfo, Begin, End, BlockBegin, BaseState),
-        InvokeStateChangeIterator(EHInfo, End, End, BlockEnd, BaseState));
+        InvokeStateChangeIterator(EHInfo, MMI, Begin, End, BlockBegin, BaseState),
+        InvokeStateChangeIterator(EHInfo, MMI, End, End, BlockEnd, BaseState));
   }
 
   // Iterator methods.
@@ -437,6 +437,7 @@ private:
   InvokeStateChangeIterator &scan();
 
   const WinEHFuncInfo &EHInfo;
+  MachineModuleInfo* MMI;
   const MCSymbol *CurrentEndLabel = nullptr;
   MachineFunction::const_iterator MFI;
   MachineFunction::const_iterator MFE;
@@ -451,8 +452,31 @@ private:
 InvokeStateChangeIterator &InvokeStateChangeIterator::scan() {
   bool IsNewBlock = false;
   for (; MFI != MFE; ++MFI, IsNewBlock = true) {
-    if (IsNewBlock)
+    if (IsNewBlock) {
       MBBI = MFI->begin();
+      const MachineBasicBlock* MBB = &*MFI;
+      const BasicBlock* BB = MBB->getBasicBlock();
+      if (BB && BB->hasAddressTaken()) {
+        MCSymbol* Label = &*MMI->getAddrLabelSymbolToEmit(BB).front();
+        auto InvokeMapIter = EHInfo.LabelToStateMap.find(Label);
+        if (InvokeMapIter != EHInfo.LabelToStateMap.end()) {
+          auto& StateAndEnd = InvokeMapIter->second;
+          int NewState = StateAndEnd.first;
+          VisitingInvoke = true;
+          if (NewState == LastStateChange.NewState) {
+            CurrentEndLabel = StateAndEnd.second;
+          }
+          else {
+            // Found a state change to report
+            LastStateChange.PreviousEndLabel = CurrentEndLabel;
+            LastStateChange.NewStartLabel = Label;
+            LastStateChange.NewState = NewState;
+            CurrentEndLabel = StateAndEnd.second;
+            return *this;
+          }
+        }
+      }
+    }
     for (auto MBBE = MFI->end(); MBBI != MBBE; ++MBBI) {
       const MachineInstr &MI = *MBBI;
       if (!VisitingInvoke && LastStateChange.NewState != BaseState &&
@@ -599,7 +623,7 @@ void WinException::emitCSpecificHandlerTable(const MachineFunction *MF) {
   while (Stop != End && !Stop->isEHFuncletEntry())
     ++Stop;
   for (const auto &StateChange :
-       InvokeStateChangeIterator::range(FuncInfo, MF->begin(), Stop)) {
+       InvokeStateChangeIterator::range(FuncInfo, MMI, MF->begin(), Stop)) {
     // Emit all the actions for the state we just transitioned out of
     // if it was not the null state
     if (LastEHState != -1)
@@ -641,7 +665,10 @@ void WinException::emitSEHActionsForRange(const WinEHFuncInfo &FuncInfo,
     }
 
     AddComment("LabelStart");
-    OS.EmitValue(getLabel(BeginLabel), 4);
+    if (BeginLabel->isLUTarget())
+      OS.EmitValue(getLabel(BeginLabel, true), 4);
+    else 
+      OS.EmitValue(getLabel(BeginLabel), 4);
     AddComment("LabelEnd");
     OS.EmitValue(getLabel(EndLabel), 4);
     AddComment(UME.IsFinally ? "FinallyFunclet" : UME.Filter ? "FilterFunction"
@@ -922,7 +949,7 @@ void WinException::computeIP2StateTable(
         std::make_pair(create32bitRef(StartLabel), BaseState));
 
     for (const auto &StateChange : InvokeStateChangeIterator::range(
-             FuncInfo, FuncletStart, FuncletEnd, BaseState)) {
+             FuncInfo, MMI, FuncletStart, FuncletEnd, BaseState)) {
       // Compute the label to report as the start of this entry; use the EH
       // start label for the invoke if we have one, otherwise (this is a call
       // which may unwind to our caller and does not have an EH start label, so)
@@ -1179,7 +1206,7 @@ void WinException::emitCLRExceptionTable(const MachineFunction *MF) {
     int CurrentState = NullState;
     assert(HandlerStack.empty());
     for (const auto &StateChange :
-         InvokeStateChangeIterator::range(FuncInfo, FuncletStart, FuncletEnd)) {
+         InvokeStateChangeIterator::range(FuncInfo, MMI, FuncletStart, FuncletEnd)) {
       // Close any try regions we're not still under
       int StillPendingState =
           getTryAncestor(FuncInfo, CurrentState, StateChange.NewState);

@@ -1308,21 +1308,22 @@ void SelectionDAGISel::ReportIPToStateForBlocks(MachineFunction *MF)
     const BasicBlock* BB = MBB->getBasicBlock();
     int State = EHInfo->BlockToStateMap[BB];
     // Need to report address-taken block for Local Unwind
-    if (State >= 0 && 
-      (BB->getFirstFaultyInst() || MBB->hasAddressTaken())) {
+    if (State >= 0 && BB->getFirstFaultyInst()) {
       // Report IP range only for blocks with State & Faulty inst
       MCSymbol* BeginLabel = MMI.getContext().createTempSymbol();
       MCSymbol* EndLabel = MMI.getContext().createTempSymbol();
       EHInfo->addIPToStateRange(State, BeginLabel, EndLabel);
 
       // Insert EH Labels 
-      auto MBBb = MBB->instr_begin();
+      auto MBBb = MBB->getFirstNonPHI();
       BuildMI(*MBB, MBBb, SDB->getCurDebugLoc(),
         TII->get(TargetOpcode::EH_LABEL)).addSym(BeginLabel);
       auto MBBe = MBB->instr_end();
       MachineInstr* MIb = &*(--MBBe);
-      if (!MIb->isTerminator())
-        ++MBBe;
+      // insert before (possible multiple) terminators 
+      while (MIb->isTerminator())
+        MIb = &*(--MBBe);
+      ++MBBe;
       BuildMI(*MBB, MBBe, SDB->getCurDebugLoc(),
         TII->get(TargetOpcode::EH_LABEL)).addSym(EndLabel);
     }

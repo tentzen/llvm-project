@@ -104,6 +104,9 @@ protected:
   /// unsigned to avoid sign extension and achieve better bitpacking with MSVC.
   unsigned Kind : 3;
 
+  /// Is SEH local_unwind target
+  unsigned IsLUTarget : 1;
+
   /// True if we have created a relocation that uses this symbol.
   mutable unsigned IsUsedInReloc : 1;
 
@@ -155,7 +158,7 @@ protected:
       : IsTemporary(isTemporary), IsRedefinable(false), IsUsed(false),
         IsRegistered(false), IsExternal(false), IsPrivateExtern(false),
         Kind(Kind), IsUsedInReloc(false), SymbolContents(SymContentsUnset),
-        CommonAlignLog2(0), Flags(0) {
+        CommonAlignLog2(0), Flags(0), IsLUTarget(0) {
     Offset = 0;
     FragmentAndHasName.setInt(!!Name);
     if (Name)
@@ -214,6 +217,9 @@ public:
 
   /// isUsed - Check if this is used.
   bool isUsed() const { return IsUsed; }
+
+  bool isLUTarget() const { return IsLUTarget; }
+  void setLUTarget(bool Value) { IsLUTarget = Value; }
 
   /// Check if this symbol is redefinable.
   bool isRedefinable() const { return IsRedefinable; }
