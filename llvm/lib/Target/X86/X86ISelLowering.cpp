@@ -24462,15 +24462,19 @@ SDValue X86TargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
     return DAG.getNode(X86ISD::Wrapper, dl, VT, Result);
   }
 
-  case Intrinsic::eh_recoverfp: {
+  case Intrinsic::eh_recoverfp:
+  case Intrinsic::eh_recoveresp: {
     SDValue FnOp = Op.getOperand(1);
     SDValue IncomingFPOp = Op.getOperand(2);
     GlobalAddressSDNode *GSD = dyn_cast<GlobalAddressSDNode>(FnOp);
     auto *Fn = dyn_cast_or_null<Function>(GSD ? GSD->getGlobal() : nullptr);
     if (!Fn)
       report_fatal_error(
-          "llvm.eh.recoverfp must take a function as the first argument");
-    return recoverFramePointer(DAG, Fn, IncomingFPOp, false);
+          "llvm.eh.recoverfp/esp must take a function as the first argument");
+    if (IntNo == Intrinsic::eh_recoverfp)
+      return recoverFramePointer(DAG, Fn, IncomingFPOp, false);
+    else if (IntNo == Intrinsic::eh_recoveresp)
+      return recoverFramePointer(DAG, Fn, IncomingFPOp, true);
   }
 
   case Intrinsic::localaddress: {
@@ -24489,16 +24493,6 @@ SDValue X86TargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
         Reg = RegInfo->getPtrSizedFrameRegister(MF);
     }
     return DAG.getCopyFromReg(DAG.getEntryNode(), dl, Reg, VT);
-  }
-  case Intrinsic::eh_recoveresp: {
-    SDValue FnOp = Op.getOperand(1);
-    SDValue IncomingFPOp = Op.getOperand(2);
-    GlobalAddressSDNode* GSD = dyn_cast<GlobalAddressSDNode>(FnOp);
-    auto* Fn = dyn_cast_or_null<Function>(GSD ? GSD->getGlobal() : nullptr);
-    if (!Fn)
-      report_fatal_error(
-        "llvm.eh.recoveresp must take a function as the first argument");
-    return recoverFramePointer(DAG, Fn, IncomingFPOp, true);
   }
 
   case Intrinsic::x86_avx512_vp2intersect_q_512:

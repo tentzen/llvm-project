@@ -2014,6 +2014,40 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
     llvm::Constant *ParentI8Fn =
         llvm::ConstantExpr::getBitCast(ParentCGF.CurFn, Int8PtrTy);
     ParentFP = Builder.CreateCall(RecoverFPIntrin, {ParentI8Fn, EntryFP});
+
+    // if the parent is a _finally, need to retrive Establisher's FP,
+    //  2nd paramenter, saved & named frame_pointer in parent's frame
+    if (ParentCGF.ParentCGF != NULL) {
+      // Locate and escape Parent's frame_pointer.addr alloca
+      llvm::AllocaInst* FramePtrAddrAlloca = nullptr;
+      for (llvm::Instruction& I : ParentCGF.CurFn->getEntryBlock()) {
+        llvm::AllocaInst* II = dyn_cast<llvm::AllocaInst>(&I);
+        if (II && II->getName().startswith("frame_pointer")) {
+          FramePtrAddrAlloca = II;
+          break;
+        }
+      }
+      assert(FramePtrAddrAlloca);
+      auto InsertPair = ParentCGF.EscapedLocals.insert(
+        std::make_pair(FramePtrAddrAlloca, ParentCGF.EscapedLocals.size()));
+      int FrameEscapeIdx = InsertPair.first->second;
+
+      // an example of a filter's prolog::
+      // %0 = call i8 * @llvm.eh.recoverfp(i8 * bitcast(@"?fin$0@0@main@@"), i8 * %frame_pointer)
+      // %1 = call i8 * @llvm.localrecover(i8 * bitcast(@"?fin$0@0@main@@"), i8 * %0, i32 0)
+      // %2 = bitcast i8 * %1 to i8 **
+      // %3 = load i8*, i8 * *%2, align 8
+      //   ==> %3 is the frame-pointer of outermost host function
+      llvm::Function* FrameRecoverFn = llvm::Intrinsic::getDeclaration(
+        &CGM.getModule(), llvm::Intrinsic::localrecover);
+      llvm::Constant* ParentI8Fn =
+        llvm::ConstantExpr::getBitCast(ParentCGF.CurFn, Int8PtrTy);
+      ParentFP = Builder.CreateCall(
+        FrameRecoverFn, { ParentI8Fn, ParentFP,
+               llvm::ConstantInt::get(Int32Ty, FrameEscapeIdx) });
+      ParentFP = Builder.CreateBitCast(ParentFP, CGM.VoidPtrPtrTy);
+      ParentFP = Builder.CreateLoad(Address(ParentFP, getPointerAlign()));
+    }
   }
 
   // Create llvm.localrecover calls for all captures.

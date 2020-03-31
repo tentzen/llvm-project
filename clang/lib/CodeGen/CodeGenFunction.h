@@ -259,7 +259,7 @@ public:
   const TargetInfo &Target;
 
   // For outliner helper only 
-  CodeGenFunction* ParentCGF;
+  CodeGenFunction* ParentCGF = nullptr;
 
   typedef std::pair<llvm::Value *, llvm::Value *> ComplexPairTy;
   LoopInfoStack LoopStack;
