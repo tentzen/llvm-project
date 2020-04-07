@@ -866,6 +866,7 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough) {
         // TODO: base this on the number of branch-afters and fixups
         const unsigned SwitchCapacity = 10;
 
+        cleanupFlags.setHasBranchAfters();
         llvm::LoadInst *Load =
           createLoadInstBefore(getNormalCleanupDestSlot(), "cleanup.dest",
                                nullptr);

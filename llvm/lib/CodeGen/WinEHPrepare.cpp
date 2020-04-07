@@ -287,6 +287,9 @@ void llvm::calculateSEHStateForBlocks(const BasicBlock* BB, int State,
     else {
       // Retrive the new State from any Invoke, in particuler seh_try_begin
       State = EHInfo.InvokeStateMap[cast<InvokeInst>(TI)];
+      // reset for "cleanup" block that are reached by abnormal-exit 
+      //  (goto/return/..) that by-pass seh_try_end() mark
+      EHInfo.BlockToStateMap[BB] = State;
     }
   }
   // Continue traveling successors recursively

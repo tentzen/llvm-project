@@ -1859,6 +1859,18 @@ struct PerformSEHFinally final : EHScopeStack::Cleanup {
 
     llvm::Value *IsForEH =
         llvm::ConstantInt::get(CGF.ConvertType(ArgTys[0]), F.isForEHCleanup());
+
+    // Except _leave and fall-through at the end, all other exits in a _try
+    //   (return/goto/continue/break) are considered as abnormal terminations
+    //   since _leave/fall-through is always Indexed 0,
+    //   just use NormalCleanupDestSlot (>= 1 for goto/return/..),
+    //   as 1st Arg to indicate abnormal termination
+    if (!F.isForEHCleanup() && F.hasBranchAfters()) {
+      Address Addr = CGF.getNormalCleanupDestSlot();
+      llvm::Value *Load = CGF.Builder.CreateLoad(Addr, "cleanup.dest");
+      IsForEH = CGF.Builder.CreateTrunc(Load, CGM.Int8Ty);
+    }
+
     Args.add(RValue::get(IsForEH), ArgTys[0]);
     Args.add(RValue::get(FP), ArgTys[1]);
 

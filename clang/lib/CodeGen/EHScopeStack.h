@@ -160,7 +160,8 @@ public:
       enum {
         F_IsForEH             = 0x1,
         F_IsNormalCleanupKind = 0x2,
-        F_IsEHCleanupKind     = 0x4
+        F_IsEHCleanupKind     = 0x4,
+        F_HasBranchAfters     = 0x8
       };
       unsigned flags;
 
@@ -179,6 +180,9 @@ public:
       /// cleanup.
       bool isEHCleanupKind() const { return flags & F_IsEHCleanupKind; }
       void setIsEHCleanupKind() { flags |= F_IsEHCleanupKind; }
+
+      bool hasBranchAfters() const { return flags & F_HasBranchAfters; }
+      void setHasBranchAfters() { flags |= F_HasBranchAfters; }
     };
 
 
