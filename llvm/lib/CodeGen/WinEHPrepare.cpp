@@ -346,6 +346,13 @@ static void calculateCXXStateNumbers(WinEHFuncInfo &FuncInfo,
 
     // catchpads are separate funclets in C++ EH due to the way rethrow works.
     int TryHigh = CatchLow - 1;
+
+    // MSVC FrameHandler3/4 expect Catch Handlers in $tryMap$ are
+    //  stored in pre-order (outer first, inner next), not post-order
+    //  Add to map here.  Fix the CatchHIgh after children are processed
+    addTryBlockMapEntry(FuncInfo, TryLow, TryHigh, CatchLow, Handlers);
+    unsigned TBMEIdx = FuncInfo.TryBlockMap.size() - 1;
+
     for (const auto *CatchPad : Handlers) {
       FuncInfo.FuncletBaseStateMap[CatchPad] = CatchLow;
       for (const User *U : CatchPad->users()) {
@@ -366,7 +373,8 @@ static void calculateCXXStateNumbers(WinEHFuncInfo &FuncInfo,
       }
     }
     int CatchHigh = FuncInfo.getLastStateNumber();
-    addTryBlockMapEntry(FuncInfo, TryLow, TryHigh, CatchHigh, Handlers);
+    // Now child Catches are processed, update CatchHigh
+    FuncInfo.TryBlockMap[TBMEIdx].CatchHigh = CatchHigh;
     LLVM_DEBUG(dbgs() << "TryLow[" << BB->getName() << "]: " << TryLow << '\n');
     LLVM_DEBUG(dbgs() << "TryHigh[" << BB->getName() << "]: " << TryHigh
                       << '\n');
