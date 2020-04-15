@@ -766,6 +766,13 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough) {
     destroyOptimisticNormalEntry(*this, Scope);
     EHStack.popCleanup();
   } else {
+    // Under -EHa, invoke eha_scope_end() to mark scope end before dtor
+    bool IsEHa = getLangOpts().EHAsynch;
+    const EHPersonality& Personality = EHPersonality::get(*this);
+    if (IsEHa && getInvokeDest() && Personality.isMSVCXXPersonality()
+      && !Scope.isLifetimeMarker())
+      EmitSehCppScopeEnd();
+
     // If we have a fallthrough and no other need for the cleanup,
     // emit it directly.
     if (HasFallthrough && !HasPrebranchedFallthrough &&
@@ -1276,3 +1283,51 @@ void CodeGenFunction::EmitCXXTemporary(const CXXTemporary *Temporary,
   pushDestroy(NormalAndEHCleanup, Ptr, TempType, destroyCXXObject,
               /*useEHCleanup*/ true);
 }
+
+static llvm::FunctionCallee getEhaScopeBeginFn(CodeGenModule & CGM) {
+  llvm::FunctionType * FTy =
+    llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
+  return CGM.CreateRuntimeFunction(FTy, "llvm.eha.scope.begin");
+}
+
+static llvm::FunctionCallee getEhaScopeEndFn(CodeGenModule & CGM) {
+  llvm::FunctionType * FTy =
+    llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
+  return CGM.CreateRuntimeFunction(FTy, "llvm.eha.scope.end");
+}
+
+// Invoke a llvm.eha.scope.begin at the beginning of a CPP scope for -EHa
+// EmitRuntimeCallOrInvoke() does not work bcause "funclet" not set
+//   in OperandBundle properly for noThrow intrinsic (see CGCall.cpp)
+void CodeGenFunction::EmitSehCppScopeBegin() {
+  assert(getLangOpts().EHAsynch);
+  llvm::FunctionCallee SehCppScope = getEhaScopeBeginFn(CGM);
+  llvm::BasicBlock * InvokeDest = getInvokeDest();
+  llvm::BasicBlock * BB = Builder.GetInsertBlock();
+  assert(BB && InvokeDest);
+  llvm::BasicBlock * Cont = createBasicBlock("invoke.cont");
+  SmallVector<llvm::OperandBundleDef, 1> BundleList =
+    getBundlesForFunclet(SehCppScope.getCallee());
+  if (CurrentFuncletPad)
+    BundleList.emplace_back("funclet", CurrentFuncletPad);
+  Builder.CreateInvoke(SehCppScope, Cont, InvokeDest, None, BundleList);
+  EmitBlock(Cont);
+}
+
+// Invoke a llvm.eha.scope.end at the end of a CPP scope for -EHa
+//   llvm.eha.scope.end is emitted before popCleanup, so it's "invoked"
+void CodeGenFunction::EmitSehCppScopeEnd() {
+  assert(getLangOpts().EHAsynch);
+  llvm::FunctionCallee SehCppScope = getEhaScopeEndFn(CGM);
+  llvm::BasicBlock* InvokeDest = getInvokeDest();
+  llvm::BasicBlock* BB = Builder.GetInsertBlock();
+  assert(BB && InvokeDest);
+  llvm::BasicBlock* Cont = createBasicBlock("invoke.cont");
+  SmallVector<llvm::OperandBundleDef, 1> BundleList =
+    getBundlesForFunclet(SehCppScope.getCallee());
+  if (CurrentFuncletPad)
+    BundleList.emplace_back("funclet", CurrentFuncletPad);
+  Builder.CreateInvoke(SehCppScope, Cont, InvokeDest, None, BundleList);
+  EmitBlock(Cont);
+}
+

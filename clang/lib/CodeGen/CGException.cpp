@@ -38,6 +38,18 @@ static llvm::FunctionCallee getFreeExceptionFn(CodeGenModule &CGM) {
   return CGM.CreateRuntimeFunction(FTy, "__cxa_free_exception");
 }
 
+static llvm::FunctionCallee getSehTryBeginFn(CodeGenModule & CGM) {
+  llvm::FunctionType * FTy =
+    llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
+  return CGM.CreateRuntimeFunction(FTy, "llvm.seh.try.begin");
+}
+
+static llvm::FunctionCallee getSehTryEndFn(CodeGenModule & CGM) {
+  llvm::FunctionType * FTy =
+    llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
+  return CGM.CreateRuntimeFunction(FTy, "llvm.seh.try.end");
+}
+
 static llvm::FunctionCallee getUnexpectedFn(CodeGenModule &CGM) {
   // void __cxa_call_unexpected(void *thrown_exception);
 
@@ -584,7 +596,12 @@ void CodeGenFunction::EnterCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
       CatchScope->setHandler(I, TypeInfo, Handler);
     } else {
       // No exception decl indicates '...', a catch-all.
-      CatchScope->setHandler(I, CGM.getCXXABI().getCatchAllTypeInfo(), Handler);
+      CatchTypeInfo TypeInfo = CGM.getCXXABI().getCatchAllTypeInfo();
+        //  For IsEHa catch(...) must handle HW exception
+        //  Adjective = HT_IsStdDotDot (0x40), only catch C++ exceptions
+        if (getLangOpts().EHAsynch)
+         TypeInfo.Flags = 0;
+        CatchScope->setHandler(I, TypeInfo, Handler);
     }
   }
 }
@@ -1602,7 +1619,31 @@ void CodeGenFunction::EmitSEHTryStmt(const SEHTryStmt &S) {
     JumpDest TryExit = getJumpDestInCurrentScope("__try.__leave");
 
     SEHTryEpilogueStack.push_back(&TryExit);
+    
+    bool IsEHa = getLangOpts().EHAsynch;
+    llvm::BasicBlock * TryBB = nullptr;
+      // emit an invoke to _seh_try_begin() runtime for -EHa
+      if (IsEHa) {
+      llvm::FunctionCallee SehTryBegin = getSehTryBeginFn(CGM);
+      EmitRuntimeCallOrInvoke(SehTryBegin);
+      if (SEHTryEpilogueStack.size() == 1) // outermost only
+        TryBB = Builder.GetInsertBlock();
+    }
+
     EmitStmt(S.getTryBlock());
+
+    // emit an invoke to _seh_try_end() runtime
+    if (IsEHa) {
+      llvm::FunctionCallee SehTryEnd = getSehTryEndFn(CGM);
+      EmitRuntimeCallOrInvoke(SehTryEnd);
+
+      // Volatilize all blocks in Try, till current insert point
+      if (TryBB) {
+        llvm::SmallPtrSet<llvm::BasicBlock*, 10> Visited;
+        VolatilizeTryBlocks(TryBB, Visited);
+      }
+    }
+
     SEHTryEpilogueStack.pop_back();
 
     if (!TryExit.getBlock()->use_empty())
@@ -1611,6 +1652,37 @@ void CodeGenFunction::EmitSEHTryStmt(const SEHTryStmt &S) {
       delete TryExit.getBlock();
   }
   ExitSEHTryStmt(S);
+}
+
+//  Recursively walk through blocks in a _try
+//      and make all memory instructions volatile
+void CodeGenFunction::VolatilizeTryBlocks(llvm::BasicBlock* BB,
+  llvm::SmallPtrSet<llvm::BasicBlock*, 10>& V)
+{
+  if (BB == Builder.GetInsertBlock() ||
+    BB == SEHTryEpilogueStack.back()->getBlock() ||
+    !V.insert(BB).second /* already visited */ ||
+    !BB->getParent()  /* not emitted */)
+    return;
+
+  if (!BB->isEHPad()) {
+    for (llvm::BasicBlock::iterator J = BB->begin(),
+      JE = BB->end(); J != JE; ++J) {
+      if (isa<llvm::LoadInst>(J)) {
+        auto LI = cast<llvm::LoadInst>(J);
+        LI->setVolatile(true);
+      }
+      else if (isa<llvm::StoreInst>(J)) {
+        auto SI = cast<llvm::StoreInst>(J);
+        SI->setVolatile(true);
+      }
+    }
+  }
+  const llvm::Instruction* TI = BB->getTerminator();
+  unsigned N = TI->getNumSuccessors();
+  for (unsigned I = 0; I < N; I++) {
+    VolatilizeTryBlocks(TI->getSuccessor(I), V);
+  }
 }
 
 namespace {
