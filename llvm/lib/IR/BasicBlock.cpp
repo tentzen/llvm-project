@@ -209,7 +209,8 @@ const Instruction * BasicBlock::getFirstFaultyInst() const {
   if (InstList.empty())
     return nullptr;
   for (const Instruction& I : *this)
-    if (isa<LoadInst>(I) || isa<StoreInst>(I))  // ToDo: Div-by-zero, FP
+    if (isa<LoadInst>(I) || isa<StoreInst>(I) ||
+        isa<CallInst>(I) )
       return &I;
   return nullptr;
 }

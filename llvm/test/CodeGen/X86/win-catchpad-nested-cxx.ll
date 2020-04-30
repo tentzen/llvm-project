@@ -63,16 +63,16 @@ handler2:
 ; CHECK-NEXT: .long   1
 
 ; CHECK: $tryMap$try_in_catch:
-; CHECK-NEXT: .long   2
-; CHECK-NEXT: .long   2
-; CHECK-NEXT: .long   3
-; CHECK-NEXT: .long   1
-; CHECK-NEXT: .long   ($handlerMap$0$try_in_catch)
 ; CHECK-NEXT: .long   0
 ; CHECK-NEXT: .long   0
 ; CHECK-NEXT: .long   3
 ; CHECK-NEXT: .long   1
 ; CHECK-NEXT: .long   ($handlerMap$1$try_in_catch)
+; CHECK-NEXT: .long   2
+; CHECK-NEXT: .long   2
+; CHECK-NEXT: .long   3
+; CHECK-NEXT: .long   1
+; CHECK-NEXT: .long   ($handlerMap$0$try_in_catch)
 
 ; CHECK: $handlerMap$0$try_in_catch:
 ; CHECK-NEXT:   .long   64

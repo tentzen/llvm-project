@@ -55,9 +55,9 @@ protected:
 #else
   // This should only be used as a static variable, which guarantees that this
   // will be zero initialized.
-  mutable std::atomic<void *> Ptr;
-  mutable void (*DeleterFn)(void *);
-  mutable const ManagedStaticBase *Next;
+  mutable std::atomic<void*> Ptr{ nullptr };
+  mutable void (*DeleterFn)(void *) = nullptr;
+  mutable const ManagedStaticBase *Next = nullptr;
 #endif
 
   void RegisterManagedStatic(void *(*creator)(), void (*deleter)(void*)) const;

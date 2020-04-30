@@ -462,7 +462,7 @@ void CodeGenFunction::EmitStartEHSpec(const Decl *D) {
   if (!FD) {
     // Check if CapturedDecl is nothrow and create terminate scope for it.
     if (const CapturedDecl* CD = dyn_cast_or_null<CapturedDecl>(D)) {
-      if (CD->isNothrow())
+      if (CD->isNothrow() && !getLangOpts().EHAsynch /* !IsEHa */)
         EHStack.pushTerminate();
     }
     return;
@@ -474,7 +474,8 @@ void CodeGenFunction::EmitStartEHSpec(const Decl *D) {
   ExceptionSpecificationType EST = Proto->getExceptionSpecType();
   if (isNoexceptExceptionSpec(EST) && Proto->canThrow() == CT_Cannot) {
     // noexcept functions are simple terminate scopes.
-    EHStack.pushTerminate();
+    if (!getLangOpts().EHAsynch) // -EHa: HW exception still can occur
+      EHStack.pushTerminate();
   } else if (EST == EST_Dynamic || EST == EST_DynamicNone) {
     // TODO: Revisit exception specifications for the MS ABI.  There is a way to
     // encode these in an object file but MSVC doesn't do anything with it.
@@ -539,7 +540,7 @@ void CodeGenFunction::EmitEndEHSpec(const Decl *D) {
   if (!FD) {
     // Check if CapturedDecl is nothrow and pop terminate scope for it.
     if (const CapturedDecl* CD = dyn_cast_or_null<CapturedDecl>(D)) {
-      if (CD->isNothrow())
+      if (CD->isNothrow() && !EHStack.empty())
         EHStack.popTerminate();
     }
     return;
@@ -549,7 +550,8 @@ void CodeGenFunction::EmitEndEHSpec(const Decl *D) {
     return;
 
   ExceptionSpecificationType EST = Proto->getExceptionSpecType();
-  if (isNoexceptExceptionSpec(EST) && Proto->canThrow() == CT_Cannot) {
+  if (isNoexceptExceptionSpec(EST) && Proto->canThrow() == CT_Cannot &&
+      !EHStack.empty() /* possible empty when -EHa */ ) {
     EHStack.popTerminate();
   } else if (EST == EST_Dynamic || EST == EST_DynamicNone) {
     // TODO: Revisit exception specifications for the MS ABI.  There is a way to
@@ -571,7 +573,6 @@ void CodeGenFunction::EmitCXXTryStmt(const CXXTryStmt &S) {
 void CodeGenFunction::EnterCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
   unsigned NumHandlers = S.getNumHandlers();
   EHCatchScope *CatchScope = EHStack.pushCatch(NumHandlers);
-
   for (unsigned I = 0; I != NumHandlers; ++I) {
     const CXXCatchStmt *C = S.getHandler(I);
 
@@ -600,9 +601,11 @@ void CodeGenFunction::EnterCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
 
       //  For IsEHa catch(...) must handle HW exception
       //  Adjective = HT_IsStdDotDot (0x40), only catch C++ exceptions
-      if (getLangOpts().EHAsynch)
+      //  Also mark scope with SehTryBegin
+      if (getLangOpts().EHAsynch) {
         TypeInfo.Flags = 0;
-
+        EmitRuntimeCallOrInvoke(getSehTryBeginFn(CGM));
+      }
       CatchScope->setHandler(I, TypeInfo, Handler);
     }
   }
@@ -1157,6 +1160,13 @@ void CodeGenFunction::ExitCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
   assert(CatchScope.getNumHandlers() == NumHandlers);
   llvm::BasicBlock *DispatchBlock = CatchScope.getCachedEHDispatchBlock();
 
+  if (getLangOpts().EHAsynch) {
+    // IsEHa: check Catchall which must be the last one
+    const CXXCatchStmt* C = S.getHandler(NumHandlers - 1);
+    if (!C->getExceptionDecl()) // null implies catch(...)
+      EmitRuntimeCallOrInvoke(getSehTryEndFn(CGM));
+  }
+
   // If the catch was not required, bail out now.
   if (!CatchScope.hasEHBranches()) {
     CatchScope.clearHandlerBlocks();
@@ -1623,23 +1633,16 @@ void CodeGenFunction::EmitSEHTryStmt(const SEHTryStmt& S) {
     SEHTryEpilog TryEpi = SEHTryEpilog(&TryExit, nullptr);
     SEHTryEpilogueStack.push_back(&TryEpi);
 
-    bool IsEHa = getLangOpts().EHAsynch;
     llvm::BasicBlock* TryBB = nullptr;
-    // emit an invoke to _seh_try_begin() runtime for -EHa
-    if (IsEHa) {
-      llvm::FunctionCallee SehTryBegin = getSehTryBeginFn(CGM);
-      EmitRuntimeCallOrInvoke(SehTryBegin);
+    // IsEHa: emit an invoke to _seh_try_begin() runtime for -EHa
+    if (getLangOpts().EHAsynch) {
+      EmitRuntimeCallOrInvoke(getSehTryBeginFn(CGM));
       if (SEHTryEpilogueStack.size() == 1) // outermost only
         TryBB = Builder.GetInsertBlock();
     }
 
     EmitStmt(S.getTryBlock());
 
-    // emit an invoke to _seh_try_end() runtime
-    if (IsEHa && Builder.GetInsertBlock()) {
-      llvm::FunctionCallee SehTryEnd = getSehTryEndFn(CGM);
-      EmitRuntimeCallOrInvoke(SehTryEnd);
-    }
     // Volatilize all blocks in Try, till current insert point 
     if (TryBB) {
       llvm::SmallPtrSet<llvm::BasicBlock*, 10> Visited;
@@ -1807,10 +1810,9 @@ void CodeGenFunction::popSEHLocalUnwind(const SEHTryStmt& S) {
 void CodeGenFunction::VolatilizeTryBlocks(llvm::BasicBlock *BB,
                                           llvm::SmallPtrSet<llvm::BasicBlock*, 10> &V)
 {
-  if (BB == Builder.GetInsertBlock() ||
-      BB == SEHTryEpilogueStack.back()->LeaveDest->getBlock() /* end of Try */ ||
+  if (BB == SEHTryEpilogueStack.back()->LeaveDest->getBlock() /* end of Try */ ||
       !V.insert(BB).second /* already visited */ ||
-      !BB->getParent()  /* not emitted */ )
+      !BB->getParent()  /* not emitted */ || BB->empty() )
     return;
 
   if (!BB->isEHPad()) {
@@ -1824,12 +1826,17 @@ void CodeGenFunction::VolatilizeTryBlocks(llvm::BasicBlock *BB,
         auto SI = cast<llvm::StoreInst>(J);
         SI->setVolatile(true);
       }
-    }
+      else if (isa<llvm::MemIntrinsic>(J)) {
+        auto* MCI = cast<llvm::MemIntrinsic>(J);
+        MCI->setVolatile(llvm::ConstantInt::get(Builder.getInt1Ty(), 1));
+      }
+    } // end of for
   }
   const llvm::Instruction* TI = BB->getTerminator();
-  unsigned N = TI->getNumSuccessors();
-  for (unsigned I = 0; I < N; I++) {
-    VolatilizeTryBlocks(TI->getSuccessor(I), V);
+  if (TI) {
+    unsigned N = TI->getNumSuccessors();
+    for (unsigned I = 0; I < N; I++)
+      VolatilizeTryBlocks(TI->getSuccessor(I), V);
   }
 }
 
@@ -2031,11 +2038,14 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
     //  2nd paramenter, saved & named frame_pointer in parent's frame
     if (ParentCGF.ParentCGF != NULL) {
       // Locate and escape Parent's frame_pointer.addr alloca
-      llvm::AllocaInst* FramePtrAddrAlloca = nullptr;
-      for (llvm::Instruction& I : ParentCGF.CurFn->getEntryBlock()) {
-        llvm::AllocaInst* II = dyn_cast<llvm::AllocaInst>(&I);
-        if (II && II->getName().startswith("frame_pointer")) {
-          FramePtrAddrAlloca = II;
+      // Depending on target, should be 1st/2nd one in LocalDeclMap.
+      // Let's just scan ImplicitParamDecl with VoidPtrTy.
+      llvm::AllocaInst *FramePtrAddrAlloca = nullptr;
+      for (auto& I : ParentCGF.LocalDeclMap) {
+        const VarDecl *D = cast<VarDecl>(I.first);
+        if (isa<ImplicitParamDecl>(D) && D->getType() == getContext().VoidPtrTy) {
+          assert(D->getName().startswith("frame_pointer"));
+          FramePtrAddrAlloca = cast<llvm::AllocaInst>(I.second.getPointer());
           break;
         }
       }
@@ -2350,6 +2360,12 @@ void CodeGenFunction::ExitSEHTryStmt(const SEHTryStmt &S) {
   if (S.getFinallyHandler()) {
     PopCleanupBlock();
     return;
+  }
+
+  // IsEHa: emit an invoke _seh_try_end() to mark end of FT flow
+  if (getLangOpts().EHAsynch && Builder.GetInsertBlock()) {
+    llvm::FunctionCallee SehTryEnd = getSehTryEndFn(CGM);
+    EmitRuntimeCallOrInvoke(SehTryEnd);
   }
 
   // Otherwise, we must have an __except block.

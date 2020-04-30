@@ -1308,8 +1308,8 @@ void SelectionDAGISel::ReportIPToStateForBlocks(MachineFunction *MF)
     const BasicBlock* BB = MBB->getBasicBlock();
     int State = EHInfo->BlockToStateMap[BB];
     // Need to report address-taken block for Local Unwind
-    if (State >= 0 && BB->getFirstFaultyInst()) {
-      // Report IP range only for blocks with State & Faulty inst
+    if (BB->getFirstFaultyInst()) {
+      // Report IP range only for blocks with Faulty inst
       MCSymbol* BeginLabel = MMI.getContext().createTempSymbol();
       MCSymbol* EndLabel = MMI.getContext().createTempSymbol();
       EHInfo->addIPToStateRange(State, BeginLabel, EndLabel);
