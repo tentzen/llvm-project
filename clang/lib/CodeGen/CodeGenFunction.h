@@ -2689,6 +2689,8 @@ public:
 
   void CodeGenFunction::EmitSehCppScopeBegin();
   void CodeGenFunction::EmitSehCppScopeEnd();
+  void CodeGenFunction::EmitSehTryScopeBegin();
+  void CodeGenFunction::EmitSehTryScopeEnd();
 
   llvm::Value *EmitLifetimeStart(uint64_t Size, llvm::Value *Addr);
   void EmitLifetimeEnd(llvm::Value *Size, llvm::Value *Addr);

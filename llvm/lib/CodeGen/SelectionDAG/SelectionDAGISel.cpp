@@ -1307,8 +1307,8 @@ void SelectionDAGISel::ReportIPToStateForBlocks(MachineFunction * MF)
     MachineBasicBlock * MBB = &*MBBI;
     const BasicBlock * BB = MBB->getBasicBlock();
     int State = EHInfo->BlockToStateMap[BB];
-    if (State >= 0 && BB->getFirstFaultyInst()) {
-      // Report IP range only for blocks with State & Faulty inst
+    if (BB->getFirstFaultyInst()) {
+      // Report IP range only for blocks with Faulty inst
       MCSymbol * BeginLabel = MMI.getContext().createTempSymbol();
       MCSymbol * EndLabel = MMI.getContext().createTempSymbol();
       EHInfo->addIPToStateRange(State, BeginLabel, EndLabel);
