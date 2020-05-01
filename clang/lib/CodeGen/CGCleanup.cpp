@@ -776,10 +776,6 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough) {
     bool IsEHa = getLangOpts().EHAsynch && !Scope.isLifetimeMarker();
     const EHPersonality& Personality = EHPersonality::get(*this);
 
-    if (IsEHa && getInvokeDest() && Personality.isMSVCXXPersonality()
-      && !Scope.isLifetimeMarker())
-      EmitSehCppScopeEnd();
-
     // If we have a fallthrough and no other need for the cleanup,
     // emit it directly.
     if (HasFallthrough && !HasPrebranchedFallthrough &&
