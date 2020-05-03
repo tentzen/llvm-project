@@ -481,6 +481,11 @@ private:
   /// A vector of metadata strings for dependent libraries for ELF.
   SmallVector<llvm::MDNode *, 16> ELFDependentLibraries;
 
+  llvm::Function* LocalUnwindFn = nullptr;
+
+  /// LabelMapForLU - This maps Label to its Local Unwind dispatch block.
+  llvm::DenseMap<const LabelStmt*, llvm::BlockAddress*> LabelMapForLU;
+
   /// @name Cache for Objective-C runtime types
   /// @{
 
@@ -633,6 +638,14 @@ public:
   void setStaticLocalDeclGuardAddress(const VarDecl *D,
                                       llvm::GlobalVariable *C) {
     StaticLocalDeclGuardMap[D] = C;
+  }
+
+  llvm::Function* getLocalUnwindFn() { return LocalUnwindFn; }
+  void setLocalUnwindFn(llvm::Function* Fn) { LocalUnwindFn = Fn; }
+
+  llvm::BlockAddress* getLabelMapForLU(LabelStmt* LS) { return LabelMapForLU[LS]; }
+  void setLabelMapForLU(LabelStmt* LS, llvm::BlockAddress* BA) {
+    LabelMapForLU[LS] = BA;
   }
 
   Address createUnnamedGlobalFrom(const VarDecl &D, llvm::Constant *Constant,

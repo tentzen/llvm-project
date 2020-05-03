@@ -368,6 +368,9 @@ public:
   CodeGenModule &CGM;  // Per-module state.
   const TargetInfo &Target;
 
+  // For outliner helper only 
+  CodeGenFunction* ParentCGF = nullptr;
+
   typedef std::pair<llvm::Value *, llvm::Value *> ComplexPairTy;
   LoopInfoStack LoopStack;
   CGBuilderTy Builder;
@@ -607,7 +610,16 @@ public:
 
   EHScopeStack EHStack;
   llvm::SmallVector<char, 256> LifetimeExtendedCleanupStack;
-  llvm::SmallVector<const JumpDest *, 2> SEHTryEpilogueStack;
+
+  // SEHTryEpilogueStack - This keeps track of where leave should jump to.
+  struct SEHTryEpilog {
+    SEHTryEpilog(JumpDest* Leave, llvm::BasicBlock* LUDispatch)
+      : LeaveDest(Leave), LeaveLUDispatch(LUDispatch) {}
+
+    const JumpDest* LeaveDest;
+    llvm::BasicBlock* LeaveLUDispatch;
+  };
+  llvm::SmallVector<SEHTryEpilog*, 2> SEHTryEpilogueStack;
 
   llvm::Instruction *CurrentFuncletPad = nullptr;
 
@@ -1374,8 +1386,18 @@ private:
 
     JumpDest BreakBlock;
     JumpDest ContinueBlock;
+
+    // SEH LU Dispatch for Break/continue from _finally,
+    //    set when entering SEH _try, reset when exiting _try
+    llvm::BasicBlock* BreakLUDispatch = nullptr;
+    llvm::BasicBlock* ContinueLUDispatch = nullptr;
   };
   SmallVector<BreakContinue, 8> BreakContinueStack;
+
+  llvm::BlockAddress* SEHLocalUnwindBreakBA = nullptr;
+  llvm::BlockAddress* SEHLocalUnwindContinueBA = nullptr;
+  llvm::BlockAddress* SEHLocalUnwindReturnBA = nullptr;
+  llvm::BlockAddress* SEHLocalUnwindLeaveBA = nullptr;
 
   /// Handles cancellation exit points in OpenMP-related constructs.
   class OpenMPCancelExitStack {
@@ -3037,6 +3059,13 @@ public:
   void EmitSEHLeaveStmt(const SEHLeaveStmt &S);
   void EnterSEHTryStmt(const SEHTryStmt &S);
   void ExitSEHTryStmt(const SEHTryStmt &S);
+
+  void EmitSEHLocalUnwind(llvm::BlockAddress* BA);
+  bool pushSEHLocalUnwind(const SEHTryStmt& S);
+  void popSEHLocalUnwind(const SEHTryStmt& S);
+
+  llvm::Function* GenerateSEHIsLocalUnwindFunction();
+  llvm::Function* GetSEHLocalUnwindFunction();
 
   void pushSEHCleanup(CleanupKind kind,
                       llvm::Function *FinallyFunc);

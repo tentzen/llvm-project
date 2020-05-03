@@ -455,6 +455,13 @@ def int_eh_recoverfp : Intrinsic<[llvm_ptr_ty],
                                  [llvm_ptr_ty, llvm_ptr_ty],
                                  [IntrNoMem]>;
 
+// The reverse operation of int_eh_recoverfp above
+// Given the pointer to the local variable area in a _finally, return the 
+// parent frames Establisher SP for the use of _local_unwind.
+def int_eh_recoveresp : Intrinsic<[llvm_ptr_ty],
+                                 [llvm_ptr_ty, llvm_ptr_ty],
+                                 [IntrNoMem]>;
+
 // Note: we treat stacksave/stackrestore as writemem because we don't otherwise
 // model their dependencies on allocas.
 def int_stacksave     : Intrinsic<[llvm_ptr_ty]>,

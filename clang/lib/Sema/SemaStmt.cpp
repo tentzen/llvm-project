@@ -2940,12 +2940,24 @@ Sema::ActOnIndirectGotoStmt(SourceLocation GotoLoc, SourceLocation StarLoc,
   return new (Context) IndirectGotoStmt(GotoLoc, StarLoc, E);
 }
 
-static void CheckJumpOutOfSEHFinally(Sema &S, SourceLocation Loc,
-                                     const Scope &DestScope) {
+static bool CheckJumpOutOfSEHFinally(Sema& S, SourceLocation Loc,
+  const Scope& DestScope) {
   if (!S.CurrentSEHFinally.empty() &&
-      DestScope.Contains(*S.CurrentSEHFinally.back())) {
+    DestScope.Contains(*S.CurrentSEHFinally.back())) {
     S.Diag(Loc, diag::warn_jump_out_of_seh_finally);
+    return true;
   }
+  return false;
+}
+
+static Scope* FindOuterMostTry(Scope* CurS, Scope* EndS) {
+  Scope* TryScope = NULL, * PScope;
+  for (PScope = CurS; PScope != EndS; PScope = PScope->getParent()) {
+    if (PScope->isSEHTryScope() || PScope->isSEHFinallyScope())
+      TryScope = PScope;
+  }
+  assert(TryScope && "A _finally not under a _Try");
+  return TryScope;
 }
 
 StmtResult
@@ -2955,8 +2967,11 @@ Sema::ActOnContinueStmt(SourceLocation ContinueLoc, Scope *CurScope) {
     // C99 6.8.6.2p1: A break shall appear only in or as a loop body.
     return StmtError(Diag(ContinueLoc, diag::err_continue_not_in_loop));
   }
-  CheckJumpOutOfSEHFinally(*this, ContinueLoc, *S);
-
+  bool JmpOutFinally = CheckJumpOutOfSEHFinally(*this, ContinueLoc, *S);
+  if (JmpOutFinally) {
+    Scope* TryScope = FindOuterMostTry(CurScope, S);
+    TryScope->getParent()->setLUDispatchContinue(true);
+  }
   return new (Context) ContinueStmt(ContinueLoc);
 }
 
@@ -2970,8 +2985,11 @@ Sema::ActOnBreakStmt(SourceLocation BreakLoc, Scope *CurScope) {
   if (S->isOpenMPLoopScope())
     return StmtError(Diag(BreakLoc, diag::err_omp_loop_cannot_use_stmt)
                      << "break");
-  CheckJumpOutOfSEHFinally(*this, BreakLoc, *S);
-
+  bool JmpOutFinally = CheckJumpOutOfSEHFinally(*this, BreakLoc, *S);
+  if (JmpOutFinally) {
+    Scope* TryScope = FindOuterMostTry(CurScope, S);
+    TryScope->getParent()->setLUDispatchBreak(true);
+  }
   return new (Context) BreakStmt(BreakLoc);
 }
 
@@ -3602,8 +3620,11 @@ Sema::ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp,
     CurScope->setNoNRVO();
   }
 
-  CheckJumpOutOfSEHFinally(*this, ReturnLoc, *CurScope->getFnParent());
-
+  bool JmpOutFinally = CheckJumpOutOfSEHFinally(*this, ReturnLoc, *CurScope->getFnParent());
+  if (JmpOutFinally) {
+    Scope* TryScope = FindOuterMostTry(CurScope, CurScope->getFnParent());
+    TryScope->getParent()->setLUDispatchReturn(true);
+  }
   return R;
 }
 
@@ -4255,8 +4276,11 @@ Sema::ActOnSEHLeaveStmt(SourceLocation Loc, Scope *CurScope) {
     SEHTryParent = SEHTryParent->getParent();
   if (!SEHTryParent)
     return StmtError(Diag(Loc, diag::err_ms___leave_not_in___try));
-  CheckJumpOutOfSEHFinally(*this, Loc, *SEHTryParent);
-
+  bool JmpOutFinally = CheckJumpOutOfSEHFinally(*this, Loc, *SEHTryParent);
+  if (JmpOutFinally) {
+    Scope* TryScope = FindOuterMostTry(CurScope, SEHTryParent);
+    TryScope->getParent()->setLUDispatchLeave(true);
+  }
   return new (Context) SEHLeaveStmt(Loc);
 }
 

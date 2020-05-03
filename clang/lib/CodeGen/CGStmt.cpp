@@ -617,7 +617,12 @@ void CodeGenFunction::EmitGotoStmt(const GotoStmt &S) {
   // "simple" statement path.
   if (HaveInsertPoint())
     EmitStopPoint(&S);
-
+  if (S.IsLocalUnwind()) {
+    LabelStmt* LS = S.getLabel()->getStmt();
+    llvm::BlockAddress* BA = CGM.getLabelMapForLU(LS);
+    EmitSEHLocalUnwind(BA);
+    return;
+  }
   EmitBranchThroughCleanup(getJumpDestForLabel(S.getLabel()));
 }
 
@@ -1065,6 +1070,12 @@ void CodeGenFunction::EmitReturnOfRValue(RValue RV, QualType Ty) {
 /// if the function returns void, or may be missing one if the function returns
 /// non-void.  Fun stuff :).
 void CodeGenFunction::EmitReturnStmt(const ReturnStmt &S) {
+  // Return from SEH finally block
+  if (IsOutlinedSEHHelper) {
+    assert(SEHLocalUnwindReturnBA);
+    return EmitSEHLocalUnwind(SEHLocalUnwindReturnBA);
+  }
+
   if (requiresReturnValueCheck()) {
     llvm::Constant *SLoc = EmitCheckSourceLocation(S.getBeginLoc());
     auto *SLocPtr =
@@ -1158,7 +1169,35 @@ void CodeGenFunction::EmitDeclStmt(const DeclStmt &S) {
     EmitDecl(*I);
 }
 
+void CodeGenFunction::EmitSEHLocalUnwind(llvm::BlockAddress* BA) {
+  // Make sure we are in a SEH finally block.
+  assert(IsOutlinedSEHHelper && CurFn);
+
+  llvm::Function* LUFn = GetSEHLocalUnwindFunction();
+  llvm::Value* EntryFP = &*(CurFn->getArg(1));
+
+  // <ToDo: tentzen> - Turn off Inlining a Local_unwind funclet for now
+  CurFn->addFnAttr(llvm::Attribute::NoInline);
+
+  // <tentzen> - local_unwind requires Establisher, not FP
+  //    Undo the recovering of parent FP done by _finally funclets 
+  llvm::Function* RecoverFPIntrin =
+    CGM.getIntrinsic(llvm::Intrinsic::eh_recoveresp);
+  llvm::Constant* ParentI8Fn =
+    llvm::ConstantExpr::getBitCast(ParentCGF->CurFn, Int8PtrTy);
+  EntryFP = Builder.CreateCall(RecoverFPIntrin, { ParentI8Fn, EntryFP });
+
+  // Call the runtime noreturn _local_unwind for normal paths (non-exception).
+  EmitRuntimeCallOrInvoke(LUFn, { EntryFP, BA });
+}
+
 void CodeGenFunction::EmitBreakStmt(const BreakStmt &S) {
+  // Jumping out of SEH finally block
+  if (IsOutlinedSEHHelper && BreakContinueStack.empty()) {
+    assert(SEHLocalUnwindBreakBA);
+    return EmitSEHLocalUnwind(SEHLocalUnwindBreakBA);
+  }
+
   assert(!BreakContinueStack.empty() && "break stmt not in a loop or switch!");
 
   // If this code is reachable then emit a stop point (if generating
@@ -1171,6 +1210,12 @@ void CodeGenFunction::EmitBreakStmt(const BreakStmt &S) {
 }
 
 void CodeGenFunction::EmitContinueStmt(const ContinueStmt &S) {
+  // Jumping out of SEH finally block
+  if (IsOutlinedSEHHelper && BreakContinueStack.empty()) {
+    assert(SEHLocalUnwindContinueBA);
+    return EmitSEHLocalUnwind(SEHLocalUnwindContinueBA);
+  }
+
   assert(!BreakContinueStack.empty() && "continue stmt not in a loop!");
 
   // If this code is reachable then emit a stop point (if generating

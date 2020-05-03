@@ -24060,8 +24060,8 @@ static int getSEHRegistrationNodeSize(const Function *Fn) {
 ///   ParentFP = RegNodeBase - ParentFrameOffset
 /// Subtracting RegNodeSize takes us to the offset of the registration node, and
 /// subtracting the offset (negative on x86) takes us back to the parent FP.
-static SDValue recoverFramePointer(SelectionDAG &DAG, const Function *Fn,
-                                   SDValue EntryEBP) {
+static SDValue recoverFramePointer(SelectionDAG& DAG, const Function* Fn,
+                                   SDValue EntryEBP, bool ReverseOp) {
   MachineFunction &MF = DAG.getMachineFunction();
   SDLoc dl;
 
@@ -24087,8 +24087,12 @@ static SDValue recoverFramePointer(SelectionDAG &DAG, const Function *Fn,
   // prologue to RBP in the parent function.
   const X86Subtarget &Subtarget =
       static_cast<const X86Subtarget &>(DAG.getSubtarget());
-  if (Subtarget.is64Bit())
-    return DAG.getNode(ISD::ADD, dl, PtrVT, EntryEBP, ParentFrameOffset);
+  if (Subtarget.is64Bit()) {
+    if (ReverseOp)
+      return DAG.getNode(ISD::SUB, dl, PtrVT, EntryEBP, ParentFrameOffset);
+    else
+      return DAG.getNode(ISD::ADD, dl, PtrVT, EntryEBP, ParentFrameOffset);
+  }
 
   int RegNodeSize = getSEHRegistrationNodeSize(Fn);
   // RegNodeBase = EntryEBP - RegNodeSize
@@ -24926,15 +24930,19 @@ SDValue X86TargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
     return DAG.getNode(X86ISD::Wrapper, dl, VT, Result);
   }
 
-  case Intrinsic::eh_recoverfp: {
+  case Intrinsic::eh_recoverfp:
+  case Intrinsic::eh_recoveresp: {
     SDValue FnOp = Op.getOperand(1);
     SDValue IncomingFPOp = Op.getOperand(2);
-    GlobalAddressSDNode *GSD = dyn_cast<GlobalAddressSDNode>(FnOp);
-    auto *Fn = dyn_cast_or_null<Function>(GSD ? GSD->getGlobal() : nullptr);
+    GlobalAddressSDNode* GSD = dyn_cast<GlobalAddressSDNode>(FnOp);
+    auto* Fn = dyn_cast_or_null<Function>(GSD ? GSD->getGlobal() : nullptr);
     if (!Fn)
       report_fatal_error(
-          "llvm.eh.recoverfp must take a function as the first argument");
-    return recoverFramePointer(DAG, Fn, IncomingFPOp);
+        "llvm.eh.recoverfp/esp must take a function as the first argument");
+    if (IntNo == Intrinsic::eh_recoverfp)
+      return recoverFramePointer(DAG, Fn, IncomingFPOp, false);
+    else if (IntNo == Intrinsic::eh_recoveresp)
+      return recoverFramePointer(DAG, Fn, IncomingFPOp, true);
   }
 
   case Intrinsic::localaddress: {

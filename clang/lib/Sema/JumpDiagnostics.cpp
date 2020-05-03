@@ -65,6 +65,8 @@ class JumpScopeChecker {
   llvm::DenseMap<Stmt*, unsigned> LabelAndGotoScopes;
   SmallVector<Stmt*, 16> Jumps;
 
+  llvm::DenseMap<unsigned, SEHTryStmt*> ScopeToTryStmt; // Scope to SEHTry stmt
+
   SmallVector<Stmt*, 4> IndirectJumps;
   SmallVector<Stmt*, 4> AsmJumps;
   SmallVector<LabelDecl*, 4> IndirectJumpTargets;
@@ -89,6 +91,9 @@ private:
   void CheckGotoStmt(GotoStmt *GS);
 
   unsigned GetDeepestCommonScope(unsigned A, unsigned B);
+
+  void RecordLocalUnwindTargets(Stmt* From, Stmt* To,
+    unsigned IScope, unsigned ToScope);
 };
 } // end anonymous namespace
 
@@ -422,6 +427,7 @@ void JumpScopeChecker::BuildScopeInformation(Stmt *S,
     SEHTryStmt *TS = cast<SEHTryStmt>(S);
     {
       unsigned NewParentScope = Scopes.size();
+      ScopeToTryStmt[NewParentScope] = TS;
       Scopes.push_back(GotoScope(ParentScope,
                                  diag::note_protected_by_seh_try,
                                  diag::note_exits_seh_try,
@@ -440,6 +446,7 @@ void JumpScopeChecker::BuildScopeInformation(Stmt *S,
       BuildScopeInformation(Except->getBlock(), NewParentScope);
     } else if (SEHFinallyStmt *Finally = TS->getFinallyHandler()) {
       unsigned NewParentScope = Scopes.size();
+      ScopeToTryStmt[NewParentScope] = TS;
       Scopes.push_back(GotoScope(ParentScope,
                                  diag::note_protected_by_seh_finally,
                                  diag::note_exits_seh_finally,
@@ -902,6 +909,7 @@ void JumpScopeChecker::CheckJump(Stmt *From, Stmt *To, SourceLocation DiagLoc,
     for (unsigned I = FromScope; I > ToScope; I = Scopes[I].ParentScope) {
       if (Scopes[I].InDiag == diag::note_protected_by_seh_finally) {
         S.Diag(From->getBeginLoc(), diag::warn_jump_out_of_seh_finally);
+        RecordLocalUnwindTargets(From, To, I, ToScope);
         break;
       }
     }
@@ -956,4 +964,34 @@ void JumpScopeChecker::CheckGotoStmt(GotoStmt *GS) {
 
 void Sema::DiagnoseInvalidJumps(Stmt *Body) {
   (void)JumpScopeChecker(Body, *this);
+}
+
+void JumpScopeChecker::RecordLocalUnwindTargets(Stmt* From, Stmt* To,
+  unsigned IScope, unsigned ToScope) {
+  unsigned OuterTryOrFinally = 0;
+  // locate the outermost Try/Finally
+  for (unsigned J = IScope; J > ToScope; J = Scopes[J].ParentScope) {
+    if (Scopes[J].InDiag == diag::note_protected_by_seh_try ||
+      Scopes[J].InDiag == diag::note_protected_by_seh_finally)
+      OuterTryOrFinally = J;
+  }
+  assert(OuterTryOrFinally > 0);
+  SEHTryStmt* TS = ScopeToTryStmt[OuterTryOrFinally];
+  // Store target label in Try stmt
+  llvm::SmallVector<LabelStmt*, 2>* LUT = TS->getLUDispatchTargets();
+  if (!LUT) {
+    LUT = new llvm::SmallVector<LabelStmt*, 2>; // <Review: tentzen> Context?
+    TS->setLUDispatchTargets(LUT);
+  }
+  bool Found = false;
+  for (auto BI = LUT->begin(), EI = LUT->end(); BI != EI; ++BI) {
+    if (*BI == cast<LabelStmt>(To)) {
+      Found = true;
+      break;
+    }
+  }
+  if (!Found)
+    LUT->push_back(cast<LabelStmt>(To));
+  GotoStmt* Goto = cast<GotoStmt>(From);
+  Goto->setLocalUnwind();
 }

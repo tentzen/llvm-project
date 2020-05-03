@@ -1597,11 +1597,14 @@ llvm::BasicBlock *CodeGenFunction::getEHResumeBlock(bool isCleanup) {
 }
 
 void CodeGenFunction::EmitSEHTryStmt(const SEHTryStmt &S) {
+  // Push an extra scope for Local Unwind
+  bool HasLUScope = pushSEHLocalUnwind(S);
+
   EnterSEHTryStmt(S);
   {
     JumpDest TryExit = getJumpDestInCurrentScope("__try.__leave");
-
-    SEHTryEpilogueStack.push_back(&TryExit);
+    SEHTryEpilog TryEpi = SEHTryEpilog(&TryExit, nullptr);
+    SEHTryEpilogueStack.push_back(&TryEpi);
     EmitStmt(S.getTryBlock());
     SEHTryEpilogueStack.pop_back();
 
@@ -1611,6 +1614,152 @@ void CodeGenFunction::EmitSEHTryStmt(const SEHTryStmt &S) {
       delete TryExit.getBlock();
   }
   ExitSEHTryStmt(S);
+  if (HasLUScope)
+    popSEHLocalUnwind(S);
+}
+
+bool CodeGenFunction::pushSEHLocalUnwind(const SEHTryStmt& S) {
+
+  llvm::SmallVector<LabelStmt*, 2>* LUDispatchTargets = S.getLUDispatchTargets();
+  unsigned N = LUDispatchTargets ? LUDispatchTargets->size() : 0;
+  unsigned NumHandlers = N + S.isLUDispatchBreak() + S.isLUDispatchContinue() +
+    S.isLUDispatchReturn() + S.isLUDispatchLeave();
+  if (NumHandlers == 0)
+    return false;
+
+  EHCatchScope* CatchScope = EHStack.pushCatch(NumHandlers);
+
+  // <tentzen> -- A continue search filter with empty _except is NOP
+  //  So skip this following:
+  //    llvm::Function *IsContSearch = HelperCGF.GenerateSEHContinueSearch();
+  //    llvm::Constant *F = llvm::ConstantExpr::getBitCast(IsContSearch, Int8PtrTy);
+  //    CatchScope->setHandler(0, IsLUFunc, createBasicBlock("__except.ret"));
+
+  CodeGenFunction HelperCGF(CGM, /*suppressNewContext=*/true);
+  int I = 0;
+  // Set handler for Local Unwind
+  if (S.isLUDispatchBreak())
+  {
+    HelperCGF.CurFn = nullptr;
+    llvm::Function* IsLUFunc =
+      HelperCGF.GenerateSEHIsLocalUnwindFunction();
+    llvm::Constant* F = llvm::ConstantExpr::getBitCast(IsLUFunc, Int8PtrTy);
+    assert(!BreakContinueStack.empty());
+    llvm::BasicBlock* CatchPadBreak = createBasicBlock("__lu.break.ret");
+    CatchScope->setHandler(I++, F, CatchPadBreak);
+    BreakContinueStack.back().BreakLUDispatch = CatchPadBreak;
+  }
+  if (S.isLUDispatchContinue())
+  {
+    HelperCGF.CurFn = nullptr;
+    llvm::Function* IsLUFunc =
+      HelperCGF.GenerateSEHIsLocalUnwindFunction();
+    llvm::Constant* F = llvm::ConstantExpr::getBitCast(IsLUFunc, Int8PtrTy);
+    assert(!BreakContinueStack.empty());
+    llvm::BasicBlock* CatchPadContinue = createBasicBlock("__lu.continue.ret");
+    CatchScope->setHandler(I++, F, CatchPadContinue);
+    BreakContinueStack.back().ContinueLUDispatch = CatchPadContinue;
+  }
+  if (S.isLUDispatchLeave())
+  {
+    HelperCGF.CurFn = nullptr;
+    llvm::Function* IsLUFunc =
+      HelperCGF.GenerateSEHIsLocalUnwindFunction();
+    llvm::Constant* F = llvm::ConstantExpr::getBitCast(IsLUFunc, Int8PtrTy);
+    llvm::BasicBlock* CatchPadContinue = createBasicBlock("__lu.leave.ret");
+    CatchScope->setHandler(I++, F, CatchPadContinue);
+    SEHTryEpilogueStack.back()->LeaveLUDispatch = CatchPadContinue;
+  }
+  if (S.isLUDispatchReturn())
+  {
+    HelperCGF.CurFn = nullptr;
+    llvm::Function* IsLUFunc =
+      HelperCGF.GenerateSEHIsLocalUnwindFunction();
+    llvm::Constant* F = llvm::ConstantExpr::getBitCast(IsLUFunc, Int8PtrTy);
+    llvm::BasicBlock* CatchPadContinue = createBasicBlock("__lu.return.ret");
+    CatchScope->setHandler(I++, F, CatchPadContinue);
+    SEHLocalUnwindReturnBA = llvm::BlockAddress::get(CurFn, CatchPadContinue);
+  }
+  for (unsigned J = 0; J < N; J++) {
+    HelperCGF.CurFn = nullptr;
+    llvm::Function* IsLUFunc =
+      HelperCGF.GenerateSEHIsLocalUnwindFunction();
+    llvm::Constant* F = llvm::ConstantExpr::getBitCast(IsLUFunc, Int8PtrTy);
+    llvm::BasicBlock* CatchPadGoto = createBasicBlock("__lu.goto.ret");
+    CatchScope->setHandler(I++, F, CatchPadGoto);
+    LabelStmt* LS = (*LUDispatchTargets)[J];
+    llvm::BlockAddress* BA = llvm::BlockAddress::get(CurFn, CatchPadGoto);
+    CGM.setLabelMapForLU(LS, BA);
+  }
+  return true;
+}
+
+void CodeGenFunction::popSEHLocalUnwind(const SEHTryStmt& S) {
+
+  llvm::SmallVector<LabelStmt*, 2>* LUDispatchTargets = S.getLUDispatchTargets();
+  unsigned N = LUDispatchTargets ? LUDispatchTargets->size() : 0;
+
+  // A pseudo EHScope for dispatch Local Unwind, no __except block
+  EHCatchScope& CatchScope = cast<EHCatchScope>(*EHStack.begin());
+
+  // The fall-through block.
+  llvm::BasicBlock* ContBB = createBasicBlock("__try.cont");
+
+  // We just emitted the body of the __try; jump to the continue block.
+  if (HaveInsertPoint())
+    Builder.CreateBr(ContBB);
+
+  // Check if our filter function returned true.
+  emitCatchDispatchBlock(*this, CatchScope);
+
+  unsigned I = 0;
+  llvm::CatchPadInst* CPI;
+  if (S.isLUDispatchBreak())
+  {
+    llvm::BasicBlock* CatchPadBreak = CatchScope.getHandler(I++).Block;
+    EmitBlock(CatchPadBreak);
+    CPI = cast<llvm::CatchPadInst>(CatchPadBreak->getFirstNonPHI());
+    llvm::BasicBlock* ExceptBreak = BreakContinueStack.back().BreakBlock.getBlock();
+    Builder.CreateCatchRet(CPI, ExceptBreak);
+  }
+  if (S.isLUDispatchContinue())
+  {
+    llvm::BasicBlock* CatchPadContinue = CatchScope.getHandler(I++).Block;
+    EmitBlock(CatchPadContinue);
+    CPI = cast<llvm::CatchPadInst>(CatchPadContinue->getFirstNonPHI());
+    llvm::BasicBlock* ExceptContinue = BreakContinueStack.back().ContinueBlock.getBlock();
+    Builder.CreateCatchRet(CPI, ExceptContinue);
+  }
+  if (S.isLUDispatchLeave())
+  {
+    llvm::BasicBlock* CatchPadLeave = CatchScope.getHandler(I++).Block;
+    EmitBlock(CatchPadLeave);
+    CPI = cast<llvm::CatchPadInst>(CatchPadLeave->getFirstNonPHI());
+    llvm::BasicBlock* ExceptLeave = SEHTryEpilogueStack.back()->LeaveDest->getBlock();
+    Builder.CreateCatchRet(CPI, ExceptLeave);
+  }
+  if (S.isLUDispatchReturn())
+  {
+    llvm::BasicBlock* CatchPadReturn = CatchScope.getHandler(I++).Block;
+    EmitBlock(CatchPadReturn);
+    CPI = cast<llvm::CatchPadInst>(CatchPadReturn->getFirstNonPHI());
+    llvm::BasicBlock* ExceptReturn = ReturnBlock.getBlock();
+    Builder.CreateCatchRet(CPI, ExceptReturn);
+  }
+  for (unsigned J = 0; J < N; J++) {
+    llvm::BasicBlock* CatchPadGoto = CatchScope.getHandler(I++).Block;
+    EmitBlock(CatchPadGoto);
+    CPI = cast<llvm::CatchPadInst>(CatchPadGoto->getFirstNonPHI());
+    LabelStmt* LS = (*LUDispatchTargets)[J];
+    JumpDest JD = getJumpDestForLabel(LS->getDecl());
+    Builder.CreateCatchRet(CPI, JD.getBlock());
+    CGM.setLabelMapForLU(LS, NULL);
+  }
+  if (N)
+    free(LUDispatchTargets);
+
+  EHStack.popCatch();
+  EmitBlock(ContBB);
 }
 
 namespace {
@@ -1925,10 +2074,32 @@ CodeGenFunction::GenerateSEHFilterFunction(CodeGenFunction &ParentCGF,
 }
 
 llvm::Function *
-CodeGenFunction::GenerateSEHFinallyFunction(CodeGenFunction &ParentCGF,
-                                            const SEHFinallyStmt &Finally) {
-  const Stmt *FinallyBlock = Finally.getBlock();
+CodeGenFunction::GenerateSEHFinallyFunction(CodeGenFunction& ParentCGF,
+  const SEHFinallyStmt& Finally) {
+  const Stmt* FinallyBlock = Finally.getBlock();
   startOutlinedSEHHelper(ParentCGF, false, FinallyBlock);
+
+  // Only save the innermost break/continue jump destination.
+  if (!ParentCGF.BreakContinueStack.empty()) {
+    BreakContinue BC = ParentCGF.BreakContinueStack.back();
+    if (BC.BreakLUDispatch)
+      SEHLocalUnwindBreakBA = llvm::BlockAddress::get(ParentCGF.CurFn, BC.BreakLUDispatch);
+    if (BC.ContinueLUDispatch)
+      SEHLocalUnwindContinueBA = llvm::BlockAddress::get(ParentCGF.CurFn, BC.ContinueLUDispatch);
+  }
+  else {
+    SEHLocalUnwindBreakBA = ParentCGF.SEHLocalUnwindBreakBA;
+    SEHLocalUnwindContinueBA = ParentCGF.SEHLocalUnwindContinueBA;
+  }
+  if (!ParentCGF.SEHTryEpilogueStack.empty()) {
+    SEHTryEpilog* TryEpi = ParentCGF.SEHTryEpilogueStack.back();
+    if (TryEpi->LeaveLUDispatch)
+      SEHLocalUnwindLeaveBA = llvm::BlockAddress::get(ParentCGF.CurFn, TryEpi->LeaveLUDispatch);
+  }
+  else {
+    SEHLocalUnwindLeaveBA = ParentCGF.SEHLocalUnwindLeaveBA;
+  }
+  SEHLocalUnwindReturnBA = ParentCGF.SEHLocalUnwindReturnBA;
 
   // Emit the original filter expression, convert to i32, and return.
   EmitStmt(FinallyBlock);
@@ -1936,6 +2107,32 @@ CodeGenFunction::GenerateSEHFinallyFunction(CodeGenFunction &ParentCGF,
   FinishFunction(FinallyBlock->getEndLoc());
 
   return CurFn;
+}
+
+llvm::Function* CodeGenFunction::GetSEHLocalUnwindFunction() {
+  llvm::Function* Fn = CGM.getLocalUnwindFn();
+  if (Fn == nullptr) {
+    llvm::LLVMContext& Ctx = getLLVMContext();
+    // void _local_unwind( void *frame, void *target_ip )
+    llvm::Type* ArgTys[] = { llvm::Type::getInt8PtrTy(Ctx),
+                            llvm::Type::getInt8PtrTy(Ctx) };
+    Fn = llvm::Function::Create(
+      llvm::FunctionType::get(llvm::Type::getVoidTy(Ctx), ArgTys, false),
+      llvm::GlobalVariable::ExternalLinkage, "_local_unwind", &CGM.getModule());
+    CGM.setLocalUnwindFn(Fn);
+  }
+  return Fn;
+}
+
+llvm::Function*
+CodeGenFunction::GenerateSEHIsLocalUnwindFunction() {
+  // IsLocalUnwind is a void dummy func just for readability.
+  llvm::LLVMContext& Ctx = getLLVMContext();
+  llvm::Type* ArgTys[] = { llvm::Type::getInt8PtrTy(Ctx),
+                          llvm::Type::getInt8PtrTy(Ctx) };
+  return llvm::Function::Create(
+    llvm::FunctionType::get(llvm::Type::getVoidTy(Ctx), ArgTys, false),
+    llvm::GlobalVariable::ExternalWeakLinkage, "__IsLocalUnwind", &CGM.getModule());
 }
 
 void CodeGenFunction::EmitSEHExceptionCodeSave(CodeGenFunction &ParentCGF,
@@ -2005,6 +2202,7 @@ void CodeGenFunction::pushSEHCleanup(CleanupKind Kind,
 
 void CodeGenFunction::EnterSEHTryStmt(const SEHTryStmt &S) {
   CodeGenFunction HelperCGF(CGM, /*suppressNewContext=*/true);
+  HelperCGF.ParentCGF = this;
   if (const SEHFinallyStmt *Finally = S.getFinallyHandler()) {
     // Outline the finally block.
     llvm::Function *FinallyFunc =
@@ -2110,6 +2308,12 @@ void CodeGenFunction::ExitSEHTryStmt(const SEHTryStmt &S) {
 }
 
 void CodeGenFunction::EmitSEHLeaveStmt(const SEHLeaveStmt &S) {
+  // Leave out of SEH finally block
+  if (IsOutlinedSEHHelper && SEHTryEpilogueStack.empty()) {
+    assert(SEHLocalUnwindLeaveBA);
+    return EmitSEHLocalUnwind(SEHLocalUnwindLeaveBA);
+  }
+
   // If this code is reachable then emit a stop point (if generating
   // debug info). We have to do this ourselves because we are on the
   // "simple" statement path.
@@ -2124,5 +2328,5 @@ void CodeGenFunction::EmitSEHLeaveStmt(const SEHLeaveStmt &S) {
     return;
   }
 
-  EmitBranchThroughCleanup(*SEHTryEpilogueStack.back());
+  EmitBranchThroughCleanup(*SEHTryEpilogueStack.back()->LeaveDest);
 }
