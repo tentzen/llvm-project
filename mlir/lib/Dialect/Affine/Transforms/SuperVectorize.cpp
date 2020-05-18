@@ -965,7 +965,7 @@ static Value vectorizeOperand(Value operand, Operation *op,
     return nullptr;
   }
   // 3. vectorize constant.
-  if (auto constant = dyn_cast_or_null<ConstantOp>(operand.getDefiningOp())) {
+  if (auto constant = operand.getDefiningOp<ConstantOp>()) {
     return vectorizeConstant(
         op, constant,
         VectorType::get(state->strategy->vectorSizes, operand.getType()));
@@ -1055,8 +1055,7 @@ static Operation *vectorizeOneOperation(Operation *opInst,
   OpBuilder b(opInst);
   OperationState newOp(opInst->getLoc(), opInst->getName().getStringRef(),
                        vectorOperands, vectorTypes, opInst->getAttrs(),
-                       /*successors=*/{},
-                       /*regions=*/{}, opInst->hasResizableOperandsList());
+                       /*successors=*/{}, /*regions=*/{});
   return b.createOperation(newOp);
 }
 

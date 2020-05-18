@@ -71,8 +71,10 @@ ExprDependence clang::computeDependence(UnaryExprOrTypeTraitExpr *E) {
   if (!D)
     return Deps;
   for (const auto *I : D->specific_attrs<AlignedAttr>()) {
+    if (I->isAlignmentErrorDependent())
+      Deps |= ExprDependence::Error;
     if (I->isAlignmentDependent())
-      return Deps | ExprDependence::ValueInstantiation;
+      Deps |= ExprDependence::ValueInstantiation;
   }
   return Deps;
 }
@@ -483,9 +485,13 @@ ExprDependence clang::computeDependence(DeclRefExpr *E, const ASTContext &Ctx) {
 }
 
 ExprDependence clang::computeDependence(RecoveryExpr *E) {
+  // Mark the expression as value- and instantiation- dependent to reuse
+  // existing suppressions for dependent code, e.g. avoiding
+  // constant-evaluation.
   // FIXME: drop type+value+instantiation once Error is sufficient to suppress
   // bogus dianostics.
-  auto D = ExprDependence::TypeValueInstantiation | ExprDependence::Error;
+  auto D = toExprDependence(E->getType()->getDependence()) |
+           ExprDependence::ValueInstantiation | ExprDependence::Error;
   for (auto *S : E->subExpressions())
     D |= S->getDependence();
   return D;

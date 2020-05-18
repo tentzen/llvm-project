@@ -128,15 +128,6 @@ public:
 private:
   unsigned getPointerAddressSpace(Value *I);
 
-  Align getAlign(LoadInst *LI) const {
-    return DL.getValueOrABITypeAlignment(LI->getAlign(), LI->getType());
-  }
-
-  Align getAlign(StoreInst *SI) const {
-    return DL.getValueOrABITypeAlignment(SI->getAlign(),
-                                         SI->getValueOperand()->getType());
-  }
-
   static const unsigned MaxDepth = 3;
 
   bool isConsecutiveAccess(Value *A, Value *B);
@@ -950,7 +941,7 @@ bool Vectorizer::vectorizeStoreChain(
   unsigned VecRegSize = TTI.getLoadStoreVecRegBitWidth(AS);
   unsigned VF = VecRegSize / Sz;
   unsigned ChainSize = Chain.size();
-  Align Alignment = getAlign(S0);
+  Align Alignment = S0->getAlign();
 
   if (!isPowerOf2_32(Sz) || VF < 2 || ChainSize < 2) {
     InstructionsProcessed->insert(Chain.begin(), Chain.end());
@@ -1015,11 +1006,11 @@ bool Vectorizer::vectorizeStoreChain(
              vectorizeStoreChain(Chains.second, InstructionsProcessed);
     }
 
-    unsigned NewAlign = getOrEnforceKnownAlignment(S0->getPointerOperand(),
-                                                   StackAdjustedAlignment,
-                                                   DL, S0, nullptr, &DT);
-    if (NewAlign >= Alignment.value())
-      Alignment = Align(NewAlign);
+    Align NewAlign = getOrEnforceKnownAlignment(S0->getPointerOperand(),
+                                                Align(StackAdjustedAlignment),
+                                                DL, S0, nullptr, &DT);
+    if (NewAlign >= Alignment)
+      Alignment = NewAlign;
     else
       return false;
   }
@@ -1103,7 +1094,7 @@ bool Vectorizer::vectorizeLoadChain(
   unsigned VecRegSize = TTI.getLoadStoreVecRegBitWidth(AS);
   unsigned VF = VecRegSize / Sz;
   unsigned ChainSize = Chain.size();
-  Align Alignment = getAlign(L0);
+  Align Alignment = L0->getAlign();
 
   if (!isPowerOf2_32(Sz) || VF < 2 || ChainSize < 2) {
     InstructionsProcessed->insert(Chain.begin(), Chain.end());
@@ -1160,10 +1151,11 @@ bool Vectorizer::vectorizeLoadChain(
              vectorizeLoadChain(Chains.second, InstructionsProcessed);
     }
 
-    unsigned NewAlign = getOrEnforceKnownAlignment(
-      L0->getPointerOperand(), StackAdjustedAlignment, DL, L0, nullptr, &DT);
-    if (NewAlign >= Alignment.value())
-      Alignment = Align(NewAlign);
+    Align NewAlign = getOrEnforceKnownAlignment(L0->getPointerOperand(),
+                                                Align(StackAdjustedAlignment),
+                                                DL, L0, nullptr, &DT);
+    if (NewAlign >= Alignment)
+      Alignment = NewAlign;
     else
       return false;
   }

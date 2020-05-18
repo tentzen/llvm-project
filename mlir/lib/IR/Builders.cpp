@@ -293,12 +293,11 @@ AffineMap Builder::getEmptyAffineMap() { return AffineMap::get(context); }
 
 AffineMap Builder::getConstantAffineMap(int64_t val) {
   return AffineMap::get(/*dimCount=*/0, /*symbolCount=*/0,
-                        {getAffineConstantExpr(val)});
+                        getAffineConstantExpr(val));
 }
 
 AffineMap Builder::getDimIdentityMap() {
-  return AffineMap::get(/*dimCount=*/1, /*symbolCount=*/0,
-                        {getAffineDimExpr(0)});
+  return AffineMap::get(/*dimCount=*/1, /*symbolCount=*/0, getAffineDimExpr(0));
 }
 
 AffineMap Builder::getMultiDimIdentityMap(unsigned rank) {
@@ -306,18 +305,19 @@ AffineMap Builder::getMultiDimIdentityMap(unsigned rank) {
   dimExprs.reserve(rank);
   for (unsigned i = 0; i < rank; ++i)
     dimExprs.push_back(getAffineDimExpr(i));
-  return AffineMap::get(/*dimCount=*/rank, /*symbolCount=*/0, dimExprs);
+  return AffineMap::get(/*dimCount=*/rank, /*symbolCount=*/0, dimExprs,
+                        context);
 }
 
 AffineMap Builder::getSymbolIdentityMap() {
   return AffineMap::get(/*dimCount=*/0, /*symbolCount=*/1,
-                        {getAffineSymbolExpr(0)});
+                        getAffineSymbolExpr(0));
 }
 
 AffineMap Builder::getSingleDimShiftAffineMap(int64_t shift) {
   // expr = d0 + shift.
   auto expr = getAffineDimExpr(0) + shift;
-  return AffineMap::get(/*dimCount=*/1, /*symbolCount=*/0, {expr});
+  return AffineMap::get(/*dimCount=*/1, /*symbolCount=*/0, expr);
 }
 
 AffineMap Builder::getShiftedAffineMap(AffineMap map, int64_t shift) {
@@ -325,19 +325,23 @@ AffineMap Builder::getShiftedAffineMap(AffineMap map, int64_t shift) {
   shiftedResults.reserve(map.getNumResults());
   for (auto resultExpr : map.getResults())
     shiftedResults.push_back(resultExpr + shift);
-  return AffineMap::get(map.getNumDims(), map.getNumSymbols(), shiftedResults);
+  return AffineMap::get(map.getNumDims(), map.getNumSymbols(), shiftedResults,
+                        context);
 }
 
 //===----------------------------------------------------------------------===//
-// OpBuilder.
+// OpBuilder
 //===----------------------------------------------------------------------===//
 
-OpBuilder::~OpBuilder() {}
+OpBuilder::Listener::~Listener() {}
 
 /// Insert the given operation at the current insertion point and return it.
 Operation *OpBuilder::insert(Operation *op) {
   if (block)
     block->getOperations().insert(insertPoint, op);
+
+  if (listener)
+    listener->notifyOperationInserted(op);
   return op;
 }
 
@@ -354,6 +358,9 @@ Block *OpBuilder::createBlock(Region *parent, Region::iterator insertPt,
   b->addArguments(argTypes);
   parent->getBlocks().insert(insertPt, b);
   setInsertionPointToEnd(b);
+
+  if (listener)
+    listener->notifyBlockCreated(b);
   return b;
 }
 

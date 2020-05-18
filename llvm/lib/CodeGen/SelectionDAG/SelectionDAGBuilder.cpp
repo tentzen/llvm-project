@@ -69,7 +69,6 @@
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/CFG.h"
-#include "llvm/IR/CallSite.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Constant.h"
 #include "llvm/IR/ConstantRange.h"
@@ -347,7 +346,7 @@ static void diagnosePossiblyInvalidConstraint(LLVMContext &Ctx, const Value *V,
 
   const char *AsmError = ", possible invalid constraint for vector type";
   if (const CallInst *CI = dyn_cast<CallInst>(I))
-    if (isa<InlineAsm>(CI->getCalledValue()))
+    if (CI->isInlineAsm())
       return Ctx.emitError(I, ErrMsg + AsmError);
 
   return Ctx.emitError(I, ErrMsg);
@@ -732,10 +731,10 @@ static void getCopyToPartsVector(SelectionDAG &DAG, const SDLoc &DL,
     IntermediateVT.getVectorNumElements() : 1;
 
   // Convert the vector to the appropriate type if necessary.
-  unsigned DestVectorNoElts = NumIntermediates * IntermediateNumElts;
-
+  auto DestEltCnt = ElementCount(NumIntermediates * IntermediateNumElts,
+                                 ValueVT.isScalableVector());
   EVT BuiltVectorTy = EVT::getVectorVT(
-      *DAG.getContext(), IntermediateVT.getScalarType(), DestVectorNoElts);
+      *DAG.getContext(), IntermediateVT.getScalarType(), DestEltCnt);
   if (ValueVT != BuiltVectorTy) {
     if (SDValue Widened = widenVectorToPartType(DAG, Val, DL, BuiltVectorTy))
       Val = Widened;
@@ -1435,12 +1434,6 @@ SDValue SelectionDAGBuilder::getValue(const Value *V) {
   return Val;
 }
 
-// Return true if SDValue exists for the given Value
-bool SelectionDAGBuilder::findValue(const Value *V) const {
-  return (NodeMap.find(V) != NodeMap.end()) ||
-    (FuncInfo.ValueMap.find(V) != FuncInfo.ValueMap.end());
-}
-
 /// getNonRegisterValue - Return an SDValue for the given Value, but
 /// don't look in FuncInfo.ValueMap for a virtual register.
 SDValue SelectionDAGBuilder::getNonRegisterValue(const Value *V) {
@@ -1559,16 +1552,17 @@ SDValue SelectionDAGBuilder::getValueImpl(const Value *V) {
       return DAG.getBlockAddress(BA, VT);
 
     VectorType *VecTy = cast<VectorType>(V->getType());
-    unsigned NumElements = VecTy->getNumElements();
 
     // Now that we know the number and type of the elements, get that number of
     // elements into the Ops array based on what kind of constant it is.
-    SmallVector<SDValue, 16> Ops;
     if (const ConstantVector *CV = dyn_cast<ConstantVector>(C)) {
+      SmallVector<SDValue, 16> Ops;
+      unsigned NumElements = cast<FixedVectorType>(VecTy)->getNumElements();
       for (unsigned i = 0; i != NumElements; ++i)
         Ops.push_back(getValue(CV->getOperand(i)));
-    } else {
-      assert(isa<ConstantAggregateZero>(C) && "Unknown vector constant!");
+
+      return NodeMap[V] = DAG.getBuildVector(VT, getCurSDLoc(), Ops);
+    } else if (isa<ConstantAggregateZero>(C)) {
       EVT EltVT =
           TLI.getValueType(DAG.getDataLayout(), VecTy->getElementType());
 
@@ -1577,11 +1571,16 @@ SDValue SelectionDAGBuilder::getValueImpl(const Value *V) {
         Op = DAG.getConstantFP(0, getCurSDLoc(), EltVT);
       else
         Op = DAG.getConstant(0, getCurSDLoc(), EltVT);
-      Ops.assign(NumElements, Op);
-    }
 
-    // Create a BUILD_VECTOR node.
-    return NodeMap[V] = DAG.getBuildVector(VT, getCurSDLoc(), Ops);
+      if (isa<ScalableVectorType>(VecTy))
+        return NodeMap[V] = DAG.getSplatVector(VT, getCurSDLoc(), Op);
+      else {
+        SmallVector<SDValue, 16> Ops;
+        Ops.assign(cast<FixedVectorType>(VecTy)->getNumElements(), Op);
+        return NodeMap[V] = DAG.getBuildVector(VT, getCurSDLoc(), Ops);
+      }
+    }
+    llvm_unreachable("Unknown vector constant");
   }
 
   // If this is a static alloca, generate it as the frameindex instead of
@@ -1834,6 +1833,7 @@ void SelectionDAGBuilder::visitRet(const ReturnInst &I) {
     unsigned NumValues = ValueVTs.size();
 
     SmallVector<SDValue, 4> Chains(NumValues);
+    Align BaseAlign = DL.getPrefTypeAlign(I.getOperand(0)->getType());
     for (unsigned i = 0; i != NumValues; ++i) {
       // An aggregate return value cannot wrap around the address space, so
       // offsets to its parts don't wrap either.
@@ -1842,9 +1842,11 @@ void SelectionDAGBuilder::visitRet(const ReturnInst &I) {
       SDValue Val = RetOp.getValue(RetOp.getResNo() + i);
       if (MemVTs[i] != ValueVTs[i])
         Val = DAG.getPtrExtOrTrunc(Val, getCurSDLoc(), MemVTs[i]);
-      Chains[i] = DAG.getStore(Chain, getCurSDLoc(), Val,
+      Chains[i] = DAG.getStore(
+          Chain, getCurSDLoc(), Val,
           // FIXME: better loc info would be nice.
-          Ptr, MachinePointerInfo::getUnknownStack(DAG.getMachineFunction()));
+          Ptr, MachinePointerInfo::getUnknownStack(DAG.getMachineFunction()),
+          commonAlignment(BaseAlign, Offsets[i]));
     }
 
     Chain = DAG.getNode(ISD::TokenFactor, getCurSDLoc(),
@@ -2778,7 +2780,7 @@ void SelectionDAGBuilder::visitInvoke(const InvokeInst &I) {
                                         LLVMContext::OB_cfguardtarget}) &&
          "Cannot lower invokes with arbitrary operand bundles yet!");
 
-  const Value *Callee(I.getCalledValue());
+  const Value *Callee(I.getCalledOperand());
   const Function *Fn = dyn_cast<Function>(Callee);
   if (isa<InlineAsm>(Callee))
     visitInlineAsm(I);
@@ -2864,8 +2866,7 @@ void SelectionDAGBuilder::visitCallBr(const CallBrInst &I) {
              {LLVMContext::OB_deopt, LLVMContext::OB_funclet}) &&
          "Cannot lower callbrs with arbitrary operand bundles yet!");
 
-  assert(isa<InlineAsm>(I.getCalledValue()) &&
-         "Only know how to handle inlineasm callbr");
+  assert(I.isInlineAsm() && "Only know how to handle inlineasm callbr");
   visitInlineAsm(I);
   CopyToExportRegsIfNeeded(&I);
 
@@ -3896,7 +3897,7 @@ void SelectionDAGBuilder::visitAlloca(const AllocaInst &I) {
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
   auto &DL = DAG.getDataLayout();
   uint64_t TySize = DL.getTypeAllocSize(Ty);
-  MaybeAlign Alignment = max(DL.getPrefTypeAlign(Ty), I.getAlign());
+  MaybeAlign Alignment = std::max(DL.getPrefTypeAlign(Ty), I.getAlign());
 
   SDValue AllocSize = getValue(I.getArraySize());
 
@@ -3962,7 +3963,7 @@ void SelectionDAGBuilder::visitLoad(const LoadInst &I) {
   SDValue Ptr = getValue(SV);
 
   Type *Ty = I.getType();
-  unsigned Alignment = I.getAlignment();
+  Align Alignment = I.getAlign();
 
   AAMDNodes AAInfo;
   I.getAAMetadata(AAInfo);
@@ -4155,7 +4156,7 @@ void SelectionDAGBuilder::visitStore(const StoreInst &I) {
   SDValue Root = I.isVolatile() ? getRoot() : getMemoryRoot();
   SmallVector<SDValue, 4> Chains(std::min(MaxParallelChains, NumValues));
   SDLoc dl = getCurSDLoc();
-  unsigned Alignment = I.getAlignment();
+  Align Alignment = I.getAlign();
   AAMDNodes AAInfo;
   I.getAAMetadata(AAInfo);
 
@@ -4260,70 +4261,49 @@ void SelectionDAGBuilder::visitMaskedStore(const CallInst &I,
 // In all other cases the function returns 'false'.
 static bool getUniformBase(const Value *Ptr, SDValue &Base, SDValue &Index,
                            ISD::MemIndexType &IndexType, SDValue &Scale,
-                           SelectionDAGBuilder *SDB) {
+                           SelectionDAGBuilder *SDB, const BasicBlock *CurBB) {
   SelectionDAG& DAG = SDB->DAG;
-  LLVMContext &Context = *DAG.getContext();
+  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
+  const DataLayout &DL = DAG.getDataLayout();
 
   assert(Ptr->getType()->isVectorTy() && "Uexpected pointer type");
+
+  // Handle splat constant pointer.
+  if (auto *C = dyn_cast<Constant>(Ptr)) {
+    C = C->getSplatValue();
+    if (!C)
+      return false;
+
+    Base = SDB->getValue(C);
+
+    unsigned NumElts = cast<VectorType>(Ptr->getType())->getNumElements();
+    EVT VT = EVT::getVectorVT(*DAG.getContext(), TLI.getPointerTy(DL), NumElts);
+    Index = DAG.getConstant(0, SDB->getCurSDLoc(), VT);
+    IndexType = ISD::SIGNED_SCALED;
+    Scale = DAG.getTargetConstant(1, SDB->getCurSDLoc(), TLI.getPointerTy(DL));
+    return true;
+  }
+
   const GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(Ptr);
-  if (!GEP)
+  if (!GEP || GEP->getParent() != CurBB)
+    return false;
+
+  if (GEP->getNumOperands() != 2)
     return false;
 
   const Value *BasePtr = GEP->getPointerOperand();
-  if (BasePtr->getType()->isVectorTy()) {
-    BasePtr = getSplatValue(BasePtr);
-    if (!BasePtr)
-      return false;
-  }
+  const Value *IndexVal = GEP->getOperand(GEP->getNumOperands() - 1);
 
-  unsigned FinalIndex = GEP->getNumOperands() - 1;
-  Value *IndexVal = GEP->getOperand(FinalIndex);
-  gep_type_iterator GTI = gep_type_begin(*GEP);
-
-  // Ensure all the other indices are 0.
-  for (unsigned i = 1; i < FinalIndex; ++i, ++GTI) {
-    auto *C = dyn_cast<Constant>(GEP->getOperand(i));
-    if (!C)
-      return false;
-    if (isa<VectorType>(C->getType()))
-      C = C->getSplatValue();
-    auto *CI = dyn_cast_or_null<ConstantInt>(C);
-    if (!CI || !CI->isZero())
-      return false;
-  }
-
-  // The operands of the GEP may be defined in another basic block.
-  // In this case we'll not find nodes for the operands.
-  if (!SDB->findValue(BasePtr))
-    return false;
-  Constant *C = dyn_cast<Constant>(IndexVal);
-  if (!C && !SDB->findValue(IndexVal))
+  // Make sure the base is scalar and the index is a vector.
+  if (BasePtr->getType()->isVectorTy() || !IndexVal->getType()->isVectorTy())
     return false;
 
-  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
-  const DataLayout &DL = DAG.getDataLayout();
-  StructType *STy = GTI.getStructTypeOrNull();
-
-  if (STy) {
-    const StructLayout *SL = DL.getStructLayout(STy);
-    unsigned Field = cast<Constant>(IndexVal)->getUniqueInteger().getZExtValue();
-    Scale = DAG.getTargetConstant(1, SDB->getCurSDLoc(), TLI.getPointerTy(DL));
-    Index = DAG.getConstant(SL->getElementOffset(Field),
-                            SDB->getCurSDLoc(), TLI.getPointerTy(DL));
-  } else {
-    Scale = DAG.getTargetConstant(
-                DL.getTypeAllocSize(GEP->getResultElementType()),
-                SDB->getCurSDLoc(), TLI.getPointerTy(DL));
-    Index = SDB->getValue(IndexVal);
-  }
   Base = SDB->getValue(BasePtr);
+  Index = SDB->getValue(IndexVal);
   IndexType = ISD::SIGNED_SCALED;
-
-  if (STy || !Index.getValueType().isVector()) {
-    unsigned GEPWidth = cast<VectorType>(GEP->getType())->getNumElements();
-    EVT VT = EVT::getVectorVT(Context, Index.getValueType(), GEPWidth);
-    Index = DAG.getSplatBuildVector(VT, SDLoc(Index), Index);
-  }
+  Scale = DAG.getTargetConstant(
+              DL.getTypeAllocSize(GEP->getResultElementType()),
+              SDB->getCurSDLoc(), TLI.getPointerTy(DL));
   return true;
 }
 
@@ -4347,7 +4327,8 @@ void SelectionDAGBuilder::visitMaskedScatter(const CallInst &I) {
   SDValue Index;
   ISD::MemIndexType IndexType;
   SDValue Scale;
-  bool UniformBase = getUniformBase(Ptr, Base, Index, IndexType, Scale, this);
+  bool UniformBase = getUniformBase(Ptr, Base, Index, IndexType, Scale, this,
+                                    I.getParent());
 
   unsigned AS = Ptr->getType()->getScalarType()->getPointerAddressSpace();
   MachineMemOperand *MMO = DAG.getMachineFunction().getMachineMemOperand(
@@ -4458,7 +4439,8 @@ void SelectionDAGBuilder::visitMaskedGather(const CallInst &I) {
   SDValue Index;
   ISD::MemIndexType IndexType;
   SDValue Scale;
-  bool UniformBase = getUniformBase(Ptr, Base, Index, IndexType, Scale, this);
+  bool UniformBase = getUniformBase(Ptr, Base, Index, IndexType, Scale, this,
+                                    I.getParent());
   unsigned AS = Ptr->getType()->getScalarType()->getPointerAddressSpace();
   MachineMemOperand *MMO = DAG.getMachineFunction().getMachineMemOperand(
       MachinePointerInfo(AS), MachineMemOperand::MOLoad,
@@ -4587,8 +4569,7 @@ void SelectionDAGBuilder::visitAtomicLoad(const LoadInst &I) {
 
   MachineMemOperand *MMO = DAG.getMachineFunction().getMachineMemOperand(
       MachinePointerInfo(I.getPointerOperand()), Flags, MemVT.getStoreSize(),
-      I.getAlign().getValueOr(DAG.getEVTAlign(MemVT)), AAMDNodes(), nullptr,
-      SSID, Order);
+      I.getAlign(), AAMDNodes(), nullptr, SSID, Order);
 
   InChain = TLI.prepareVolatileOrAtomicLoad(InChain, dl, DAG);
 
@@ -4641,7 +4622,7 @@ void SelectionDAGBuilder::visitAtomicStore(const StoreInst &I) {
   MachineFunction &MF = DAG.getMachineFunction();
   MachineMemOperand *MMO = MF.getMachineMemOperand(
       MachinePointerInfo(I.getPointerOperand()), Flags, MemVT.getStoreSize(),
-      *I.getAlign(), AAMDNodes(), nullptr, SSID, Ordering);
+      I.getAlign(), AAMDNodes(), nullptr, SSID, Ordering);
 
   SDValue Val = getValue(I.getValueOperand());
   if (Val.getValueType() != MemVT)
@@ -6393,7 +6374,7 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
 
     int FI = FuncInfo.StaticAllocaMap[Slot];
     MFI.setStackProtectorIndex(FI);
-    EVT PtrTy = Src.getValueType();
+    EVT PtrTy = TLI.getFrameIndexTy(DAG.getDataLayout());
 
     SDValue FIN = DAG.getFrameIndex(FI, PtrTy);
 
@@ -7507,7 +7488,7 @@ bool SelectionDAGBuilder::visitBinaryFloatCall(const CallInst &I,
 
 void SelectionDAGBuilder::visitCall(const CallInst &I) {
   // Handle inline assembly differently.
-  if (isa<InlineAsm>(I.getCalledValue())) {
+  if (I.isInlineAsm()) {
     visitInlineAsm(I);
     return;
   }
@@ -7679,7 +7660,7 @@ void SelectionDAGBuilder::visitCall(const CallInst &I) {
                                         LLVMContext::OB_cfguardtarget}) &&
          "Cannot lower calls with arbitrary operand bundles!");
 
-  SDValue Callee = getValue(I.getCalledValue());
+  SDValue Callee = getValue(I.getCalledOperand());
 
   if (I.countOperandBundlesOfType(LLVMContext::OB_deopt))
     LowerCallSiteWithDeoptBundle(&I, Callee, nullptr);
@@ -7980,7 +7961,7 @@ class ExtraFlags {
 
 public:
   explicit ExtraFlags(const CallBase &Call) {
-    const InlineAsm *IA = cast<InlineAsm>(Call.getCalledValue());
+    const InlineAsm *IA = cast<InlineAsm>(Call.getCalledOperand());
     if (IA->hasSideEffects())
       Flags |= InlineAsm::Extra_HasSideEffects;
     if (IA->isAlignStack())
@@ -8013,7 +7994,7 @@ public:
 
 /// visitInlineAsm - Handle a call to an InlineAsm object.
 void SelectionDAGBuilder::visitInlineAsm(const CallBase &Call) {
-  const InlineAsm *IA = cast<InlineAsm>(Call.getCalledValue());
+  const InlineAsm *IA = cast<InlineAsm>(Call.getCalledOperand());
 
   /// ConstraintOperands - Information about all of the constraints.
   SDISelAsmOperandInfoVector ConstraintOperands;
@@ -8179,6 +8160,21 @@ void SelectionDAGBuilder::visitInlineAsm(const CallBase &Call) {
             : OpInfo;
     GetRegistersForValue(DAG, getCurSDLoc(), OpInfo, RefOpInfo);
 
+    auto DetectWriteToReservedRegister = [&]() {
+      const MachineFunction &MF = DAG.getMachineFunction();
+      const TargetRegisterInfo &TRI = *MF.getSubtarget().getRegisterInfo();
+      for (unsigned Reg : OpInfo.AssignedRegs.Regs) {
+        if (Register::isPhysicalRegister(Reg) &&
+            TRI.isInlineAsmReadOnlyReg(MF, Reg)) {
+          const char *RegName = TRI.getName(Reg);
+          emitInlineAsmError(Call, "write to reserved register '" +
+                                       Twine(RegName) + "'");
+          return true;
+        }
+      }
+      return false;
+    };
+
     switch (OpInfo.Type) {
     case InlineAsm::isOutput:
       if (OpInfo.ConstraintType == TargetLowering::C_Memory) {
@@ -8203,6 +8199,9 @@ void SelectionDAGBuilder::visitInlineAsm(const CallBase &Call) {
                         Twine(OpInfo.ConstraintCode) + "'");
           return;
         }
+
+        if (DetectWriteToReservedRegister())
+          return;
 
         // Add information to the INLINEASM node to know that this register is
         // set.
@@ -8349,6 +8348,9 @@ void SelectionDAGBuilder::visitInlineAsm(const CallBase &Call) {
                                Twine(OpInfo.ConstraintCode) + "'");
         return;
       }
+
+      if (DetectWriteToReservedRegister())
+        return;
 
       SDLoc dl = getCurSDLoc();
 
@@ -8666,7 +8668,7 @@ void SelectionDAGBuilder::visitStackmap(const CallInst &CI) {
   SmallVector<SDValue, 32> Ops;
 
   SDLoc DL = getCurSDLoc();
-  Callee = getValue(CI.getCalledValue());
+  Callee = getValue(CI.getCalledOperand());
   NullPtr = DAG.getIntPtrConstant(0, DL, true);
 
   // The stackmap intrinsic only records the live variables (the arguments
@@ -9282,6 +9284,8 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
     SDNodeFlags Flags;
     Flags.setNoUnsignedWrap(true);
 
+    MachineFunction &MF = CLI.DAG.getMachineFunction();
+    Align HiddenSRetAlign = MF.getFrameInfo().getObjectAlign(DemoteStackIdx);
     for (unsigned i = 0; i < NumValues; ++i) {
       SDValue Add = CLI.DAG.getNode(ISD::ADD, CLI.DL, PtrVT, DemoteStackSlot,
                                     CLI.DAG.getConstant(Offsets[i], CLI.DL,
@@ -9290,7 +9294,7 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
           RetTys[i], CLI.DL, CLI.Chain, Add,
           MachinePointerInfo::getFixedStack(CLI.DAG.getMachineFunction(),
                                             DemoteStackIdx, Offsets[i]),
-          /* Alignment = */ 1);
+          HiddenSRetAlign);
       ReturnValues[i] = L;
       Chains[i] = L.getValue(1);
     }
@@ -9513,8 +9517,7 @@ static void tryToElideArgumentCopy(
                   "object size\n");
     return;
   }
-  Align RequiredAlignment = AI->getAlign().getValueOr(
-      FuncInfo.MF->getDataLayout().getABITypeAlign(AI->getAllocatedType()));
+  Align RequiredAlignment = AI->getAlign();
   if (MFI.getObjectAlign(FixedIndex) < RequiredAlignment) {
     LLVM_DEBUG(dbgs() << "  argument copy elision failed: alignment of alloca "
                          "greater than stack argument alignment ("

@@ -148,8 +148,7 @@ bool llvm::isDereferenceableAndAlignedPointer(const Value *V, Type *Ty,
                                               const DominatorTree *DT) {
   // For unsized types or scalable vectors we don't know exactly how many bytes
   // are dereferenced, so bail out.
-  if (!Ty->isSized() ||
-      (Ty->isVectorTy() && cast<VectorType>(Ty)->isScalable()))
+  if (!Ty->isSized() || isa<ScalableVectorType>(Ty))
     return false;
 
   // When dereferenceability information is provided by a dereferenceable
@@ -211,8 +210,7 @@ bool llvm::isDereferenceableAndAlignedInLoop(LoadInst *LI, Loop *L,
 
   APInt EltSize(DL.getIndexTypeSizeInBits(Ptr->getType()),
                 DL.getTypeStoreSize(LI->getType()));
-  const Align Alignment = DL.getValueOrABITypeAlignment(
-      MaybeAlign(LI->getAlignment()), LI->getType());
+  const Align Alignment = LI->getAlign();
 
   Instruction *HeaderFirstNonPHI = L->getHeader()->getFirstNonPHI();
 

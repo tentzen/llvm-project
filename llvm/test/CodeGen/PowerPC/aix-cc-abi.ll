@@ -992,7 +992,7 @@ declare void @test_stackarg_int(i32, i32, i32, i32, i32, i32, i32, i32, i8 zeroe
 ; 32BIT-DAG:  renamable $r[[REGLLIADDR:[0-9]+]] = LWZtoc @lli, $r2 :: (load 4 from got)
 ; 32BIT-DAG:  renamable $r[[REGLLI1:[0-9]+]] = LWZ 0, renamable $r[[REGLLIADDR]] :: (dereferenceable load 4 from @lli, align 8)
 ; 32BIT-DAG:  STW killed renamable $r[[REGLLI1]], 68, $r1 :: (store 4)
-; 32BIT-DAG:  renamable $r[[REGLLI2:[0-9]+]] = LWZ 4, killed renamable $r[[REGLLIADDR]] :: (dereferenceable load 4 from @lli + 4)
+; 32BIT-DAG:  renamable $r[[REGLLI2:[0-9]+]] = LWZ 4, killed renamable $r[[REGLLIADDR]] :: (dereferenceable load 4 from @lli + 4, align 8)
 ; 32BIT-DAG:  STW killed renamable $r[[REGLLI2]], 72, $r1 :: (store 4)
 ; 32BIT-DAG:  STW renamable $r[[REGI]], 76, $r1 :: (store 4)
 ; 32BIT-NEXT: BL_NOP <mcsymbol .test_stackarg_int>, csr_aix32, implicit-def dead $lr, implicit $rm, implicit $r3, implicit $r4, implicit $r5, implicit $r6, implicit $r7, implicit $r8, implicit $r9, implicit $r10, implicit $r2, implicit-def $r1
@@ -1484,7 +1484,7 @@ entry:
 ; 32BIT-DAG:   $r10 = LI 8
 ; 32BIT-DAG:   renamable $r[[REGLL1ADDR:[0-9]+]] = LWZtoc @ll1, $r2 :: (load 4 from got)
 ; 32BIT-DAG:   renamable $r[[REGLL1A:[0-9]+]] = LWZ 0, renamable $r[[REGLL1ADDR]] :: (dereferenceable load 4 from @ll1, align 8)
-; 32BIT-DAG:   renamable $r[[REGLL1B:[0-9]+]] = LWZ 4, killed renamable $r[[REGLL1ADDR]] :: (dereferenceable load 4 from @ll1 + 4)
+; 32BIT-DAG:   renamable $r[[REGLL1B:[0-9]+]] = LWZ 4, killed renamable $r[[REGLL1ADDR]] :: (dereferenceable load 4 from @ll1 + 4, align 8)
 ; 32BIT-DAG:   STW killed renamable $r[[REGLL1A]], 56, $r1 :: (store 4)
 ; 32BIT-DAG:   STW killed renamable $r[[REGLL1B]], 60, $r1 :: (store 4)
 ; 32BIT-DAG:   renamable $r[[REGSIADDR:[0-9]+]] = LWZtoc @si1, $r2 :: (load 4 from got)
@@ -1501,7 +1501,7 @@ entry:
 ; 32BIT-DAG:   STW killed renamable $r[[REGSI]], 76, $r1 :: (store 4)
 ; 32BIT-DAG:   renamable $r[[REGLL2ADDR:[0-9]+]] = LWZtoc @ll2, $r2 :: (load 4 from got)
 ; 32BIT-DAG:   renamable $r[[REGLL2A:[0-9]+]] = LWZ 0, renamable $r[[REGLL2ADDR]] :: (dereferenceable load 4 from @ll2, align 8)
-; 32BIT-DAG:   renamable $r[[REGLL2B:[0-9]+]] = LWZ 4, killed renamable $r[[REGLL2ADDR]] :: (dereferenceable load 4 from @ll2 + 4)
+; 32BIT-DAG:   renamable $r[[REGLL2B:[0-9]+]] = LWZ 4, killed renamable $r[[REGLL2ADDR]] :: (dereferenceable load 4 from @ll2 + 4, align 8)
 ; 32BIT-DAG:   STW killed renamable $r[[REGLL2A]], 80, $r1 :: (store 4)
 ; 32BIT-DAG:   STW killed renamable $r[[REGLL2B]], 84, $r1 :: (store 4)
 ; 32BIT-DAG:   renamable $r[[REGUCADDR:[0-9]+]] = LWZtoc @uc1, $r2 :: (load 4 from got)
@@ -2333,7 +2333,7 @@ define void @caller_mix() {
 ; ASM32PWR4-DAG:   stw [[REG:[0-9]+]], 156(1)
 ; ASM32PWR4-DAG:   stw [[REG:[0-9]+]], 160(1)
 ; ASM32PWR4-DAG:   stw [[REG:[0-9]+]], 164(1)
-; ASM32PWR4-DAG:  bl .mix_floats
+; ASM32PWR4:       bl .mix_floats
 
 ; ASM64PWR4:      mflr 0
 ; ASM64PWR4-DAG:  std 0, 16(1)
@@ -2352,9 +2352,4 @@ define void @caller_mix() {
 ; ASM64PWR4-DAG:  std [[REG:[0-9]+]], 200(1)
 ; ASM64PWR4-DAG:  std [[REG:[0-9]+]], 208(1)
 ; ASM64PWR4-DAG:  std [[REG:[0-9]+]], 216(1)
-; ASM64PWR4-DAG:  std [[REG:[0-9]+]], 224(1)
-; ASM64PWR4-DAG:  std [[REG:[0-9]+]], 232(1)
-; ASM64PWR4-DAG:  bl .mix_floats
-; ASM64PWR4-DAG:  ld [[REGF1:[0-9]+]], 232(1)
-; ASM64PWR4-DAG:  ld [[REGF2:[0-9]+]], 224(1)
-; ASM64PWR4-DAG: blr
+; ASM64PWR4:      bl .mix_floats

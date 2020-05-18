@@ -1614,7 +1614,9 @@ define i32 @test_constantaggzerovector_v1s32(i32 %arg){
 ; CHECK: [[ARG:%[0-9]+]]:_(s32) = COPY $w0
 ; CHECK: [[C0:%[0-9]+]]:_(s32) = G_CONSTANT i32 0
 ; CHECK-NOT: G_MERGE_VALUES
-; CHECK: G_ADD [[ARG]], [[C0]]
+; CHECK: [[COPY:%[0-9]+]]:_(s32) = COPY [[C0]]
+; CHECK-NOT: G_MERGE_VALUES
+; CHECK: G_ADD [[ARG]], [[COPY]]
   %vec = insertelement <1 x i32> undef, i32 %arg, i32 0
   %add = add <1 x i32> %vec, zeroinitializer
   %res = extractelement <1 x i32> %add, i32 0
@@ -1626,7 +1628,9 @@ define i32 @test_constantdatavector_v1s32(i32 %arg){
 ; CHECK: [[ARG:%[0-9]+]]:_(s32) = COPY $w0
 ; CHECK: [[C1:%[0-9]+]]:_(s32) = G_CONSTANT i32 1
 ; CHECK-NOT: G_MERGE_VALUES
-; CHECK: G_ADD [[ARG]], [[C1]]
+; CHECK: [[COPY:%[0-9]+]]:_(s32) = COPY [[C0]]
+; CHECK-NOT: G_MERGE_VALUES
+; CHECK: G_ADD [[ARG]], [[COPY]]
   %vec = insertelement <1 x i32> undef, i32 %arg, i32 0
   %add = add <1 x i32> %vec, <i32 1>
   %res = extractelement <1 x i32> %add, i32 0
@@ -2358,6 +2362,34 @@ define i64 @test_readcyclecounter() {
   ; CHECK-NEXT: RET_ReallyLR implicit $x0
   %res = call i64 @llvm.readcyclecounter()
   ret i64 %res
+}
+
+define i64 @test_freeze(i64 %a) {
+  ; CHECK-LABEL: name:            test_freeze
+  ; CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY $x0
+  ; CHECK-NEXT: [[RES:%[0-9]+]]:_(s64) = G_FREEZE [[COPY]]
+  ; CHECK-NEXT: $x0 = COPY [[RES]]
+  ; CHECK-NEXT: RET_ReallyLR implicit $x0
+  %res = freeze i64 %a
+  ret i64 %res
+}
+
+define {i8, i32} @test_freeze_struct({ i8, i32 }* %addr) {
+  ; CHECK-LABEL: name:            test_freeze_struct
+  ; CHECK: [[COPY:%[0-9]+]]:_(p0) = COPY $x0
+  ; CHECK-NEXT: [[LOAD:%[0-9]+]]:_(s8) = G_LOAD [[COPY]](p0)
+  ; CHECK-NEXT: [[C:%[0-9]+]]:_(s64) = G_CONSTANT i64 4
+  ; CHECK-NEXT: [[PTR_ADD:%[0-9]+]]:_(p0) = G_PTR_ADD [[COPY]], [[C]]
+  ; CHECK-NEXT: [[LOAD1:%[0-9]+]]:_(s32) = G_LOAD [[PTR_ADD]](p0)
+  ; CHECK-NEXT: [[FREEZE:%[0-9]+]]:_(s8) = G_FREEZE [[LOAD]]
+  ; CHECK-NEXT: [[FREEZE1:%[0-9]+]]:_(s32) = G_FREEZE [[LOAD1]]
+  ; CHECK-NEXT: [[ANYEXT:%[0-9]+]]:_(s32) = G_ANYEXT [[FREEZE]]
+  ; CHECK-NEXT: $w0 = COPY [[ANYEXT]]
+  ; CHECK-NEXT: $w1 = COPY [[FREEZE1]]
+  ; CHECK-NEXT: RET_ReallyLR implicit $w0, implicit $w1
+  %load = load { i8, i32 }, { i8, i32 }* %addr
+  %res = freeze {i8, i32} %load
+  ret {i8, i32} %res
 }
 
 !0 = !{ i64 0, i64 2 }
